@@ -18,13 +18,32 @@
 //! becomes [`InterviewState::Successful`] when the endpoints are actually known,
 //! because that is the part everything downstream needs.
 
-use rszigbee_spec::ids::{EndpointId, Ieee, Nwk};
+use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee, Nwk};
+use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zdo::{self, ZdoClusterId};
 use tracing::{debug, warn};
 
 use super::{RuntimeError, Zigbee};
-use crate::device::{DeviceKind, EndpointInfo, InterviewState, PowerSource};
+use crate::device::{BasicInfo, DeviceKind, EndpointInfo, InterviewState, PowerSource};
 use crate::event::InterviewStep;
+
+/// The `genBasic` cluster.
+const GEN_BASIC: ClusterId = ClusterId(0x0000);
+
+/// `genBasic` attribute ids.
+mod attr {
+    use super::AttrId;
+
+    pub const ZCL_VERSION: AttrId = AttrId(0x0000);
+    pub const APP_VERSION: AttrId = AttrId(0x0001);
+    pub const STACK_VERSION: AttrId = AttrId(0x0002);
+    pub const HW_VERSION: AttrId = AttrId(0x0003);
+    pub const MANUFACTURER_NAME: AttrId = AttrId(0x0004);
+    pub const MODEL_ID: AttrId = AttrId(0x0005);
+    pub const DATE_CODE: AttrId = AttrId(0x0006);
+    pub const POWER_SOURCE: AttrId = AttrId(0x0007);
+    pub const SW_BUILD_ID: AttrId = AttrId(0x4000);
+}
 
 /// Progress an interview reports back to the runtime task.
 ///
@@ -63,6 +82,8 @@ pub struct InterviewOutcome {
     pub failures: Vec<(InterviewStep, String)>,
     /// Endpoints discovered.
     pub endpoints: Vec<EndpointInfo>,
+    /// What `genBasic` reported, when it answered.
+    pub basic: Option<BasicInfo>,
 }
 
 impl InterviewOutcome {
@@ -90,11 +111,18 @@ pub async fn run(zigbee: &Zigbee, ieee: Ieee) -> Result<InterviewOutcome, Runtim
         completed: Vec::new(),
         failures: Vec::new(),
         endpoints: Vec::new(),
+        basic: None,
     };
 
     node_descriptor(zigbee, ieee, &mut outcome).await?;
     let endpoints = active_endpoints(zigbee, ieee, &mut outcome).await?;
     simple_descriptors(zigbee, ieee, endpoints, &mut outcome).await?;
+    // Last, because it needs an endpoint to read from, and the endpoint list
+    // comes from the step before. Without it there is no model string, and
+    // without a model string no definition can be resolved -- so a device that
+    // refuses this step is a device that stays unrecognised no matter how good
+    // the definition catalogue is.
+    basic_attributes(zigbee, ieee, &mut outcome).await?;
 
     // Endpoints decide the verdict, because they are what everything
     // downstream needs. A node descriptor on its own does not make a device
@@ -121,6 +149,121 @@ pub async fn run(zigbee: &Zigbee, ieee: Ieee) -> Result<InterviewOutcome, Runtim
         .interview_update(ieee, InterviewUpdate::Finished(Box::new(outcome.clone())))
         .await?;
     Ok(outcome)
+}
+
+/// Reads `genBasic`: who made this device and what model it is.
+///
+/// The model string is the primary key for definition matching, and the
+/// manufacturer name is what separates the dozens of unrelated devices sharing
+/// a model string like `TS0601`. Everything the compatibility layer does starts
+/// here.
+///
+/// A device that answers only some of these is normal and still useful: a model
+/// with no date code resolves perfectly well. Only a missing *model* leaves the
+/// device unrecognisable.
+async fn basic_attributes(
+    zigbee: &Zigbee,
+    ieee: Ieee,
+    outcome: &mut InterviewOutcome,
+) -> Result<(), RuntimeError> {
+    // The endpoint that actually hosts genBasic, falling back to the first one
+    // the device reported. Reading endpoint 1 unconditionally fails on devices
+    // whose application endpoint is numbered differently.
+    let endpoint = outcome
+        .endpoints
+        .iter()
+        .find(|e| e.input_clusters.contains(&GEN_BASIC))
+        .or_else(|| outcome.endpoints.first())
+        .map_or(EndpointId(1), |e| e.id);
+
+    let attributes = vec![
+        attr::ZCL_VERSION,
+        attr::APP_VERSION,
+        attr::STACK_VERSION,
+        attr::HW_VERSION,
+        attr::MANUFACTURER_NAME,
+        attr::MODEL_ID,
+        attr::DATE_CODE,
+        attr::POWER_SOURCE,
+        attr::SW_BUILD_ID,
+    ];
+
+    match zigbee.zcl_read(ieee, endpoint, GEN_BASIC, attributes).await {
+        Ok(values) => {
+            outcome.basic = Some(BasicInfo {
+                manufacturer_name: values.iter().find_map(|(id, v)| {
+                    (*id == attr::MANUFACTURER_NAME.0)
+                        .then(|| text(v))
+                        .flatten()
+                }),
+                model_id: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::MODEL_ID.0).then(|| text(v)).flatten()),
+                date_code: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::DATE_CODE.0).then(|| text(v)).flatten()),
+                software_build_id: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::SW_BUILD_ID.0).then(|| text(v)).flatten()),
+                zcl_version: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::ZCL_VERSION.0).then(|| small(v)).flatten()),
+                app_version: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::APP_VERSION.0).then(|| small(v)).flatten()),
+                stack_version: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::STACK_VERSION.0).then(|| small(v)).flatten()),
+                hardware_version: values
+                    .iter()
+                    .find_map(|(id, v)| (*id == attr::HW_VERSION.0).then(|| small(v)).flatten()),
+            });
+            if outcome
+                .basic
+                .as_ref()
+                .and_then(|b| b.model_id.as_ref())
+                .is_some()
+            {
+                outcome.completed.push(InterviewStep::BasicAttributes);
+            } else {
+                outcome.failures.push((
+                    InterviewStep::BasicAttributes,
+                    "answered without a modelId, so no definition can be resolved".into(),
+                ));
+            }
+        }
+        Err(e) => outcome
+            .failures
+            .push((InterviewStep::BasicAttributes, e.to_string())),
+    }
+    zigbee
+        .interview_update(ieee, InterviewUpdate::Step(InterviewStep::BasicAttributes))
+        .await
+}
+
+/// A ZCL string, with control characters stripped.
+///
+/// Devices pad and terminate strings with NULs and occasionally emit stray
+/// control bytes. Left in, they reach logs, filenames and MQTT topics.
+fn text(value: &ZclValue) -> Option<String> {
+    match value {
+        ZclValue::Str(s) => {
+            let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+            let trimmed = cleaned.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// A small unsigned value, when the device reported one that fits.
+fn small(value: &ZclValue) -> Option<u8> {
+    match value {
+        ZclValue::Uint(v) => u8::try_from(*v).ok(),
+        ZclValue::Int(v) => u8::try_from(*v).ok(),
+        ZclValue::Enum(v) => u8::try_from(*v).ok(),
+        _ => None,
+    }
 }
 
 /// Reads the node descriptor: what kind of device this is, and whether it

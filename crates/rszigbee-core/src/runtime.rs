@@ -47,6 +47,7 @@
 //! the cluster registry, so they need no device definition.
 
 mod decode;
+mod definitions;
 mod encode;
 mod interview;
 mod inventory;
@@ -55,7 +56,8 @@ mod task;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rszigbee_spec::ids::Ieee;
+use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee};
+use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zdo::ZdoClusterId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -68,6 +70,7 @@ use crate::event::Event;
 use crate::reachability::{ReachabilityPolicy, SilencePolicy};
 use crate::store::{StoreError, ZigbeeStore};
 
+pub use definitions::{ConfigureStep, PlannedZcl};
 pub use encode::EncodeError;
 pub use interview::InterviewOutcome;
 pub(crate) use interview::InterviewUpdate;
@@ -139,10 +142,22 @@ enum Request {
     Devices(oneshot::Sender<Vec<DeviceInfo>>),
     Device(Ieee, oneshot::Sender<Option<DeviceInfo>>),
     Network(oneshot::Sender<Result<crate::adapter::NetworkInfo, AdapterError>>),
+    Definition(Ieee, oneshot::Sender<Option<(String, bool)>>),
+    ConfigurePlan(Ieee, oneshot::Sender<Vec<ConfigureStep>>),
     PermitJoin {
         duration: Duration,
         via: Option<Ieee>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    /// A ZCL read. Correlated on the transaction sequence the task allocates,
+    /// for the same reason ZDO is: the value on the wire has to be the value
+    /// waited on.
+    ZclRead {
+        ieee: Ieee,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attributes: Vec<AttrId>,
+        reply: oneshot::Sender<Result<Vec<(u16, ZclValue)>, RuntimeError>>,
     },
     /// A ZDO request. The task allocates the sequence number and builds the
     /// payload with it, so sequence allocation and response correlation cannot
@@ -211,6 +226,7 @@ pub struct ZigbeeBuilder<A, S> {
     event_capacity: usize,
     interview_on_join: bool,
     registry: rszigbee_spec::zcl::registry::ClusterRegistry,
+    definitions: rszigbee_devices::DefinitionIndex,
 }
 
 impl<A, S> core::fmt::Debug for ZigbeeBuilder<A, S> {
@@ -257,6 +273,18 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> ZigbeeBuilder<A, S> {
     #[must_use]
     pub fn event_capacity(mut self, events: usize) -> Self {
         self.event_capacity = events.max(1);
+        self
+    }
+
+    /// The device definitions used to recognise devices and map commands.
+    ///
+    /// Empty by default, which means capability commands are refused: without
+    /// a definition there is no way to know which cluster `SetOn` belongs to,
+    /// and guessing is how a command lands on the wrong cluster and appears to
+    /// do nothing.
+    #[must_use]
+    pub fn definitions(mut self, definitions: rszigbee_devices::DefinitionIndex) -> Self {
+        self.definitions = definitions;
         self
     }
 
@@ -340,6 +368,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> ZigbeeBuilder<A, S> {
                 coordinator,
                 network_known: stored.is_some(),
                 registry: self.registry,
+                definitions: self.definitions,
             },
             handle.clone(),
         );
@@ -392,6 +421,7 @@ impl Zigbee {
             event_capacity: DEFAULT_EVENT_CAPACITY,
             interview_on_join: true,
             registry: rszigbee_spec::zcl::registry::ClusterRegistry::with_builtins(),
+            definitions: rszigbee_devices::DefinitionIndex::new(),
         }
     }
 
@@ -485,6 +515,35 @@ impl Zigbee {
         rx.await.map_err(|_| RuntimeError::Stopped)?
     }
 
+    /// Reads attributes from a device and waits for the response.
+    ///
+    /// A foundation read, so it works on a device with no definition. That is
+    /// the point: reading `genBasic` is how a model string is learned, and the
+    /// model is what resolves a definition.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the runtime has stopped, the device is unknown, the coordinator
+    /// refuses, or no response arrives in time.
+    pub async fn zcl_read(
+        &self,
+        ieee: Ieee,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attributes: Vec<AttrId>,
+    ) -> Result<Vec<(u16, ZclValue)>, RuntimeError> {
+        let (tx, rx) = oneshot::channel();
+        self.request(Request::ZclRead {
+            ieee,
+            endpoint,
+            cluster,
+            attributes,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| RuntimeError::Stopped)?
+    }
+
     /// Sends a ZDO request and waits for the matching response.
     ///
     /// `build` receives the transaction sequence number, which the runtime
@@ -533,6 +592,37 @@ impl Zigbee {
         .await
         .map_err(|_| CommandError::ShuttingDown)?;
         rx.await.map_err(|_| CommandError::ShuttingDown)?
+    }
+
+    /// The definition resolved for a device, if one matched.
+    ///
+    /// Returns the model name and whether that definition is complete. An
+    /// incomplete one still works for the capabilities it does describe; the
+    /// flag is how a caller finds out that something about the device is not
+    /// expressed rather than discovering it from behaviour.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the runtime has stopped.
+    pub async fn definition(&self, ieee: Ieee) -> Result<Option<(String, bool)>, RuntimeError> {
+        let (tx, rx) = oneshot::channel();
+        self.request(Request::Definition(ieee, tx)).await?;
+        rx.await.map_err(|_| RuntimeError::Stopped)
+    }
+
+    /// The bindings and reporting a device's definition asks for.
+    ///
+    /// Materialised rather than executed, so an operator can see what joining
+    /// a device will do to it, and so it is testable without a radio.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the runtime has stopped. A device with no definition yields an
+    /// empty plan rather than an error: nothing is known to configure.
+    pub async fn configure_plan(&self, ieee: Ieee) -> Result<Vec<ConfigureStep>, RuntimeError> {
+        let (tx, rx) = oneshot::channel();
+        self.request(Request::ConfigurePlan(ieee, tx)).await?;
+        rx.await.map_err(|_| RuntimeError::Stopped)
     }
 
     /// Interviews a device now, whether or not it has been interviewed before.
@@ -899,10 +989,7 @@ mod tests {
                 DeviceCommand::ZclAttributes(ZclAttributeWrite {
                     endpoint: Some(EndpointId(1)),
                     cluster: ClusterId(0x0000),
-                    attributes: vec![(
-                        rszigbee_spec::ids::AttrId(0x0010),
-                        ZclValue::Str("hall".into()),
-                    )],
+                    attributes: vec![(AttrId(0x0010), ZclValue::Str("hall".into()))],
                     manufacturer: None,
                 }),
             )
@@ -1042,5 +1129,442 @@ mod tests {
             .expect_err("there is no short address to send to");
         assert!(matches!(error, RuntimeError::UnknownDevice(_)), "{error:?}");
         assert!(control.zdo_sent().is_empty());
+    }
+}
+
+/// The vertical slice: a definition producing behaviour.
+///
+/// These are the acceptance criteria for wiring definitions into the runtime.
+/// Each one is a claim that could quietly stop being true, and all of them run
+/// against `MockAdapter` with no hardware.
+#[cfg(test)]
+mod definition_integration {
+    use std::time::Duration;
+
+    use rszigbee_devices::{Definition, DefinitionIndex, Extend};
+    use rszigbee_spec::ids::{ClusterId, EndpointId, Ieee, Nwk};
+
+    use super::*;
+    use crate::adapter::{AdapterEvent, MockAdapter, MockHandle, ZclRx};
+    use crate::command::DeviceCommand;
+    use crate::device::{DeviceKind, InterviewState};
+    use crate::event::Event;
+    use crate::store::{MemoryStore, PersistedDevice, PersistedEndpoint, ZigbeeStore};
+
+    const BULB: Ieee = Ieee::new(0x0017_8801_00dc_4d3f);
+    const SENSOR: Ieee = Ieee::new(0x0012_4b00_2218_9abc);
+
+    /// A complete definition for a dimmable light.
+    fn bulb_definition() -> Definition {
+        let mut d = Definition::new("TRADFRI bulb E27 WS opal 980lm");
+        d.vendor = "IKEA".into();
+        d.match_rules.models = vec!["TRADFRI bulb E27 WS opal 980lm".into()];
+        d.extend = vec![
+            Extend::Light {
+                brightness: true,
+                color_temp: Some((250, 454)),
+                color: false,
+            },
+            Extend::Identify,
+        ];
+        let mut binding = rszigbee_devices::Binding::default();
+        binding.endpoint = EndpointId(1);
+        binding.cluster = ClusterId(0x0006);
+        binding.reporting = vec![rszigbee_devices::Reporting::default()];
+        d.bindings = vec![binding];
+        d
+    }
+
+    /// A definition for a sensor, which has no on/off.
+    fn sensor_definition() -> Definition {
+        let mut d = Definition::new("TS0601_soil");
+        d.match_rules.models = vec!["TS0601".into()];
+        d.extend = vec![Extend::Temperature(rszigbee_devices::NumericSpec::default())];
+        d
+    }
+
+    fn index() -> DefinitionIndex {
+        let mut index = DefinitionIndex::new();
+        index.insert(bulb_definition()).expect("insert");
+        index.insert(sensor_definition()).expect("insert");
+        index
+    }
+
+    /// A store already holding an interviewed device, so the tests exercise
+    /// resolution without re-running an interview the mock cannot script.
+    async fn stored(ieee: Ieee, model: &str, clusters: &[u16]) -> MemoryStore {
+        let store = MemoryStore::new();
+        let mut device = PersistedDevice::new(ieee, Nwk::new(0x1234));
+        device.kind = DeviceKind::Router;
+        device.interview = InterviewState::Successful;
+        device.basic.model_id = Some(model.to_owned());
+        device.endpoints = vec![PersistedEndpoint {
+            id: EndpointId(1),
+            profile: rszigbee_spec::ids::ProfileId::HA,
+            device_id: 0x0100,
+            input_clusters: clusters.iter().copied().map(ClusterId).collect(),
+            output_clusters: Vec::new(),
+        }];
+        store.upsert_device(&device).await.expect("upsert");
+        store
+    }
+
+    async fn runtime_with(store: MemoryStore) -> (Zigbee, MockHandle) {
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, store)
+            .definitions(index())
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        (zigbee, control)
+    }
+
+    // ---- 1. a known complete definition no longer returns NoDefinition
+
+    #[tokio::test]
+    async fn a_recognised_device_resolves_to_its_definition() {
+        let (zigbee, _control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006, 0x0008]).await)
+                .await;
+        let resolved = zigbee.definition(BULB).await.expect("definition");
+        assert_eq!(
+            resolved,
+            Some(("TRADFRI bulb E27 WS opal 980lm".to_owned(), true)),
+            "the model was learned, so a definition must match and be complete"
+        );
+    }
+
+    // ---- 2. SetOn produces the expected genOnOff command
+
+    #[tokio::test]
+    async fn set_on_reaches_the_radio_as_a_gen_on_off_command() {
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006, 0x0008]).await)
+                .await;
+        control.reply_zcl(Ok(None));
+
+        zigbee
+            .send(BULB, DeviceCommand::SetOn(true))
+            .await
+            .expect("a recognised light accepts on/off");
+
+        let sent = control.zcl_sent();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].cluster, ClusterId(0x0006));
+        assert_eq!(sent[0].endpoint, EndpointId(1));
+        // Frame control 0x01 is cluster-specific client-to-server; the last
+        // byte is the command, 0x01 = on.
+        assert_eq!(sent[0].frame.first(), Some(&0x01));
+        assert_eq!(sent[0].frame.last(), Some(&0x01));
+    }
+
+    #[tokio::test]
+    async fn set_off_differs_from_set_on_only_in_the_command_byte() {
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006]).await).await;
+        control.reply_zcl(Ok(None));
+        zigbee
+            .send(BULB, DeviceCommand::SetOn(false))
+            .await
+            .expect("off");
+        let sent = control.zcl_sent();
+        assert_eq!(sent[0].frame.last(), Some(&0x00));
+    }
+
+    // ---- 3. endpoint mapping is respected
+
+    #[tokio::test]
+    async fn the_definitions_declared_endpoint_is_used_not_the_first_cluster_host() {
+        // A two-gang switch where both endpoints host genOnOff. Only the
+        // definition knows gang two is the one being addressed, and picking the
+        // first host would switch the wrong one.
+        let mut definition = Definition::new("two gang");
+        definition.match_rules.models = vec!["TS0002".into()];
+        definition.extend = vec![Extend::OnOff {
+            endpoints: vec![EndpointId(2)],
+            power_on_behavior: false,
+        }];
+        let mut index = DefinitionIndex::new();
+        index.insert(definition).expect("insert");
+
+        let store = MemoryStore::new();
+        let mut device = PersistedDevice::new(SENSOR, Nwk::new(0x1234));
+        device.interview = InterviewState::Successful;
+        device.basic.model_id = Some("TS0002".into());
+        device.endpoints = (1u8..=2)
+            .map(|id| PersistedEndpoint {
+                id: EndpointId(id),
+                profile: rszigbee_spec::ids::ProfileId::HA,
+                device_id: 0x0100,
+                input_clusters: vec![ClusterId(0x0006)],
+                output_clusters: Vec::new(),
+            })
+            .collect();
+        store.upsert_device(&device).await.expect("upsert");
+
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, store)
+            .definitions(index)
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+
+        control.reply_zcl(Ok(None));
+        zigbee
+            .send(SENSOR, DeviceCommand::SetOn(true))
+            .await
+            .expect("send");
+        assert_eq!(control.zcl_sent()[0].endpoint, EndpointId(2));
+    }
+
+    // ---- 4. the configure plan can be materialised
+
+    #[tokio::test]
+    async fn the_configure_plan_is_materialised_from_the_definition() {
+        let (zigbee, _control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006]).await).await;
+        let plan = zigbee.configure_plan(BULB).await.expect("plan");
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        assert_eq!(plan[0].cluster, ClusterId(0x0006));
+        assert_eq!(plan[0].endpoint, EndpointId(1));
+        assert!(
+            plan[0].max_interval > 0,
+            "without a max interval a silent device is indistinguishable from a dead one"
+        );
+    }
+
+    // ---- 5. unknown or unsupported never silently falls back
+
+    #[tokio::test]
+    async fn an_unrecognised_device_refuses_the_command_explicitly() {
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "NOT-IN-THE-CATALOGUE", &[0x0006]).await).await;
+
+        assert_eq!(zigbee.definition(BULB).await.expect("definition"), None);
+        let error = zigbee
+            .send(BULB, DeviceCommand::SetOn(true))
+            .await
+            .expect_err("an unrecognised device must not be guessed at");
+        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+        // The important half: nothing reached the radio.
+        assert!(
+            control.zcl_sent().is_empty(),
+            "a refused command must not send anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sensor_refuses_on_off_rather_than_sending_gen_on_off_anyway() {
+        let (zigbee, control) =
+            runtime_with(stored(SENSOR, "TS0601", &[0x0000, 0x0402]).await).await;
+        assert_eq!(
+            zigbee.definition(SENSOR).await.expect("definition"),
+            Some(("TS0601_soil".to_owned(), true))
+        );
+
+        let error = zigbee
+            .send(SENSOR, DeviceCommand::SetOn(true))
+            .await
+            .expect_err("a soil sensor has no on/off");
+        assert!(
+            matches!(error, CommandError::UnsupportedCapability(ref c) if c.as_str() == "state"),
+            "{error:?}"
+        );
+        assert!(control.zcl_sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_device_with_no_model_learned_yet_resolves_to_nothing() {
+        // Joined but not interviewed: no model string, so no definition. This
+        // must be a clean "not yet" rather than a wrong match.
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, MemoryStore::new())
+            .definitions(index())
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        let mut stream = zigbee.events();
+
+        control.emit(AdapterEvent::DeviceJoined {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+        });
+        let _ = stream.recv().await;
+
+        assert_eq!(zigbee.definition(BULB).await.expect("definition"), None);
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_definition_reports_itself_and_still_serves_what_it_describes() {
+        // A deliberate reading of "incomplete must fail explicitly": the
+        // failure is per *capability*, not per definition.
+        //
+        // Refusing every command on a definition carrying one
+        // `Extend::Unsupported` would break a light because its vendor effects
+        // are not expressed, which helps nobody. What must never happen is a
+        // silent fallback — and that is enforced by the capability mapping
+        // itself, which only ever emits what the definition states.
+        //
+        // So incompleteness is *reported*, through `definition()` and a log
+        // line, and the capabilities the definition does describe keep working.
+        let mut definition = bulb_definition();
+        definition.extend.push(Extend::Unsupported {
+            helper: "philips.m.gradient".into(),
+            note: "gradient effects need a converter".into(),
+        });
+        let mut index = DefinitionIndex::new();
+        index.insert(definition).expect("insert");
+
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(
+            adapter,
+            events,
+            stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006]).await,
+        )
+        .definitions(index)
+        .interview_on_join(false)
+        .start()
+        .await
+        .expect("start");
+
+        // Visible as incomplete...
+        assert_eq!(
+            zigbee.definition(BULB).await.expect("definition"),
+            Some(("TRADFRI bulb E27 WS opal 980lm".to_owned(), false)),
+            "the second element is `is_complete`, and it must be false"
+        );
+
+        // ...and still a working light.
+        control.reply_zcl(Ok(None));
+        zigbee
+            .send(BULB, DeviceCommand::SetOn(true))
+            .await
+            .expect("on/off is described, so it must work");
+        assert_eq!(control.zcl_sent().len(), 1);
+
+        // But the part that is not expressed is refused, not approximated.
+        let error = zigbee
+            .send(BULB, DeviceCommand::SetPreset("gradient".into()))
+            .await
+            .expect_err("an unexpressed capability must be refused");
+        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+    }
+
+    // ---- the read path, which is what makes a model string exist at all
+
+    #[tokio::test]
+    async fn a_gen_basic_read_is_correlated_by_transaction_sequence() {
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0000]).await).await;
+
+        // The adapter accepts the read and answers out of band, as the Ember
+        // one does.
+        control.reply_zcl(Ok(None));
+        let handle = tokio::spawn({
+            let zigbee = zigbee.clone();
+            async move {
+                zigbee
+                    .zcl_read(BULB, EndpointId(1), ClusterId(0x0000), vec![AttrId(0x0005)])
+                    .await
+            }
+        });
+
+        // Wait for the request to actually be sent, then answer it with the
+        // sequence number the runtime chose.
+        let tsn = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(tx) = control.zcl_sent().first()
+                    && let Some(&tsn) = tx.frame.get(1)
+                {
+                    return tsn;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the read should reach the adapter");
+
+        // A read response: frame control 0x18 (server to client), the same tsn,
+        // command 0x01, then attribute 0x0005 status 0 type 0x42 "bulb".
+        let mut frame = vec![0x18, tsn, 0x01, 0x05, 0x00, 0x00, 0x42, 0x04];
+        frame.extend_from_slice(b"bulb");
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0000),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+
+        let values = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("no timeout")
+            .expect("task")
+            .expect("the read must be answered by the correlated frame");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, 0x0005);
+    }
+
+    #[tokio::test]
+    async fn a_correlated_read_response_is_not_also_reported_as_an_attribute_report() {
+        // Otherwise every read would look like an unsolicited report and a
+        // consumer would see phantom state changes.
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0000]).await).await;
+        let mut stream = zigbee.events();
+        control.reply_zcl(Ok(None));
+
+        let reader = tokio::spawn({
+            let zigbee = zigbee.clone();
+            async move {
+                zigbee
+                    .zcl_read(BULB, EndpointId(1), ClusterId(0x0000), vec![AttrId(0x0005)])
+                    .await
+            }
+        });
+        let tsn = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(&tsn) = control.zcl_sent().first().and_then(|t| t.frame.get(1)) {
+                    return tsn;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("sent");
+
+        let mut frame = vec![0x18, tsn, 0x01, 0x05, 0x00, 0x00, 0x42, 0x04];
+        frame.extend_from_slice(b"bulb");
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0000),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+        let _ = tokio::time::timeout(Duration::from_secs(1), reader).await;
+
+        // Drain briefly: there must be no ZclMessage for the correlated frame.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(30), stream.recv()).await {
+                Ok(Some(Event::ZclMessage(m))) => {
+                    panic!("a correlated read answer must not surface as a report: {m:?}")
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
     }
 }

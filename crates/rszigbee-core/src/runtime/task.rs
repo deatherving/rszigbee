@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use rszigbee_spec::ids::{Ieee, Nwk};
+use rszigbee_devices::{Definition, DefinitionIndex};
+use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee, Nwk};
+use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zcl::registry::ClusterRegistry;
 use rszigbee_spec::zdo::ZdoClusterId;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -33,7 +35,7 @@ use super::inventory::{self, Inventory};
 use super::{
     InterviewOutcome, InterviewUpdate, Request, RuntimeError, ZDO_TIMEOUT, Zigbee, interview,
 };
-use super::{decode, encode};
+use super::{decode, definitions, encode};
 use crate::adapter::{AdapterError, AdapterEvent, CoordinatorAdapter, StartOutcome};
 use crate::command::{CommandError, CommandOutcome, Confirmation, DeviceCommand};
 use crate::device::InterviewState;
@@ -57,11 +59,19 @@ pub struct Config<A, S> {
     pub coordinator: Ieee,
     pub network_known: bool,
     pub registry: ClusterRegistry,
+    pub definitions: DefinitionIndex,
 }
 
 /// A ZDO request awaiting its response.
 struct PendingZdo {
     reply: oneshot::Sender<Result<Vec<u8>, RuntimeError>>,
+    ieee: Ieee,
+    deadline: Instant,
+}
+
+/// A ZCL read awaiting its response.
+struct PendingZcl {
+    reply: oneshot::Sender<Result<Vec<(u16, ZclValue)>, RuntimeError>>,
     ieee: Ieee,
     deadline: Instant,
 }
@@ -85,9 +95,11 @@ pub fn spawn<A: CoordinatorAdapter, S: ZigbeeStore>(config: Config<A, S>, handle
         network_known: config.network_known,
         devices,
         pending_zdo: HashMap::new(),
+        pending_zcl: HashMap::new(),
         zdo_sequence: 0,
         zcl_sequence: 0,
         registry: config.registry,
+        definitions: config.definitions,
         handle,
     };
     tokio::spawn(task.run(config.outcome));
@@ -105,9 +117,11 @@ struct Task<A, S> {
     network_known: bool,
     devices: Inventory,
     pending_zdo: HashMap<(ZdoClusterId, u8), PendingZdo>,
+    pending_zcl: HashMap<(ClusterId, u8), PendingZcl>,
     zdo_sequence: u8,
     zcl_sequence: u8,
     registry: ClusterRegistry,
+    definitions: DefinitionIndex,
     handle: Zigbee,
 }
 
@@ -202,6 +216,9 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         for (_, pending) in self.pending_zdo.drain() {
             let _ = pending.reply.send(Err(RuntimeError::Stopped));
         }
+        for (_, pending) in self.pending_zcl.drain() {
+            let _ = pending.reply.send(Err(RuntimeError::Stopped));
+        }
         let flushed = self.store.flush().await;
         let stopped = self.adapter.stop().await;
         // Both are attempted before either error is returned: skipping the
@@ -231,6 +248,16 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             } => {
                 let _ = reply.send(self.permit_join(duration, via).await);
             }
+            Request::ZclRead {
+                ieee,
+                endpoint,
+                cluster,
+                attributes,
+                reply,
+            } => {
+                self.zcl_read(ieee, endpoint, cluster, &attributes, reply)
+                    .await;
+            }
             Request::Zdo {
                 ieee,
                 cluster,
@@ -253,6 +280,23 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             }
             Request::InterviewUpdate { ieee, update } => {
                 self.apply_interview_update(ieee, *update).await;
+            }
+            Request::Definition(ieee, reply) => {
+                let _ = reply.send(
+                    self.resolve(ieee)
+                        .map(|d| (d.model.clone(), d.is_complete())),
+                );
+            }
+            Request::ConfigurePlan(ieee, reply) => {
+                let plan = match (self.resolve(ieee), self.devices.get(ieee)) {
+                    (Some(definition), Some(entry)) => {
+                        definitions::configure_plan(definition, &entry.info)
+                    }
+                    // No definition means nothing is known to configure, which
+                    // is an empty plan rather than an error.
+                    _ => Vec::new(),
+                };
+                let _ = reply.send(plan);
             }
             // Handled in `run` so it can return.
             Request::Stop(reply) => {
@@ -334,6 +378,65 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         }
     }
 
+    /// Reads attributes, correlating the response by transaction sequence.
+    async fn zcl_read(
+        &mut self,
+        ieee: Ieee,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attributes: &[AttrId],
+        reply: oneshot::Sender<Result<Vec<(u16, ZclValue)>, RuntimeError>>,
+    ) {
+        let Some(nwk) = self.devices.get(ieee).map(|e| e.info.nwk) else {
+            let _ = reply.send(Err(RuntimeError::UnknownDevice(ieee)));
+            return;
+        };
+
+        self.zcl_sequence = self.zcl_sequence.wrapping_add(1);
+        let tsn = self.zcl_sequence;
+
+        let tx = crate::adapter::ZclTx {
+            dest: crate::adapter::Destination::Unicast { ieee, nwk },
+            endpoint,
+            source_endpoint: EndpointId(1),
+            profile: rszigbee_spec::ids::ProfileId::HA,
+            cluster,
+            frame: encode::read_attributes(tsn, attributes),
+            options: crate::adapter::TxOptions {
+                expect_response: true,
+                ..crate::adapter::TxOptions::default()
+            },
+        };
+
+        match self.adapter.send_zcl(tx).await {
+            // Some adapters answer inline; the Ember one delivers the response
+            // as an event. Both are handled rather than one being assumed.
+            Ok(Some(rx)) => {
+                let decoded = decode::zcl_message(&self.registry, ieee, &rx)
+                    .ok()
+                    .and_then(|m| match m.kind {
+                        crate::event::ZclMessageKind::Attributes(a) => Some(a),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let _ = reply.send(Ok(decoded));
+            }
+            Ok(None) => {
+                self.pending_zcl.insert(
+                    (cluster, tsn),
+                    PendingZcl {
+                        reply,
+                        ieee,
+                        deadline: Instant::now() + ZDO_TIMEOUT,
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e.into()));
+            }
+        }
+    }
+
     /// Fails ZDO requests whose deadline passed or whose caller went away.
     ///
     /// Without this the map grows for every device that never answers, which
@@ -348,6 +451,21 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             .collect();
         for key in expired {
             if let Some(pending) = self.pending_zdo.remove(&key) {
+                let _ = pending.reply.send(Err(RuntimeError::ZdoTimeout {
+                    ieee: pending.ieee,
+                    timeout: ZDO_TIMEOUT,
+                }));
+            }
+        }
+
+        let stale: Vec<_> = self
+            .pending_zcl
+            .iter()
+            .filter(|(_, p)| p.deadline <= now || p.reply.is_closed())
+            .map(|(k, _)| *k)
+            .collect();
+        for key in stale {
+            if let Some(pending) = self.pending_zcl.remove(&key) {
                 let _ = pending.reply.send(Err(RuntimeError::ZdoTimeout {
                     ieee: pending.ieee,
                     timeout: ZDO_TIMEOUT,
@@ -391,10 +509,23 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                         })?;
                     (write.endpoint, write.cluster, frame)
                 }
-                // Everything else needs a definition to know which cluster and
-                // attribute a capability lives on. Guessing is how a command lands
-                // on the wrong cluster and appears to do nothing.
-                _ => return Err(CommandError::NoDefinition),
+                // Everything else is mapped from the device's definition.
+                // There is deliberately no fallback: without one there is no
+                // way to know which cluster a capability lives on, and a guess
+                // that is right on most devices is silently wrong on the rest.
+                ref other => {
+                    let definition = self.resolve(ieee).ok_or(CommandError::NoDefinition)?;
+                    let entry = self
+                        .devices
+                        .get(ieee)
+                        .ok_or(CommandError::UnknownDevice(ieee))?;
+                    let planned = definitions::plan_command(definition, &entry.info, other)?;
+                    (
+                        Some(planned.endpoint),
+                        planned.cluster,
+                        encode::planned(tsn, planned.command, &planned.payload),
+                    )
+                }
             };
 
         // No definition means no default endpoint to fall back on, so an
@@ -409,14 +540,14 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             None => entry
                 .info
                 .endpoint_with_input(cluster)
-                .map_or(rszigbee_spec::ids::EndpointId(1), |e| e.id),
+                .map_or(EndpointId(1), |e| e.id),
         };
         let options = crate::adapter::TxOptions::default();
 
         let tx = crate::adapter::ZclTx {
             dest: crate::adapter::Destination::Unicast { ieee, nwk },
             endpoint,
-            source_endpoint: rszigbee_spec::ids::EndpointId(1),
+            source_endpoint: EndpointId(1),
             profile: rszigbee_spec::ids::ProfileId::HA,
             cluster,
             frame,
@@ -561,6 +692,24 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             entry.info.link_quality = rx.link_quality.or(entry.info.link_quality);
         }
 
+        // A frame carrying the transaction sequence of an outstanding read is
+        // that read's answer. Checked before the report path, so a read does
+        // not also surface as an unsolicited attribute report.
+        if let Ok(frame) = rszigbee_spec::zcl::frame::ZclFrame::decode(&rx.frame)
+            && let Some(pending) = self.pending_zcl.remove(&(rx.cluster, frame.header.tsn))
+        {
+            let decoded = decode::zcl_message(&self.registry, ieee, &rx)
+                .ok()
+                .and_then(|m| match m.kind {
+                    crate::event::ZclMessageKind::Attributes(a) => Some(a),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let _ = pending.reply.send(Ok(decoded));
+            self.touch(ieee, SystemTime::now(), LastSeenReason::Message);
+            return;
+        }
+
         // Decoded, then reported. A frame that will not decode still moves
         // `last_seen` and still produces an event, because it is proof the
         // device is alive and it is the only evidence anyone has for adding
@@ -701,16 +850,12 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             return;
         };
         let nwk = entry.info.nwk;
-        let endpoint = entry
-            .info
-            .endpoints
-            .first()
-            .map_or(rszigbee_spec::ids::EndpointId(1), |e| e.id);
+        let endpoint = entry.info.endpoints.first().map_or(EndpointId(1), |e| e.id);
 
         let tx = crate::adapter::ZclTx {
             dest: crate::adapter::Destination::Unicast { ieee, nwk },
             endpoint,
-            source_endpoint: rszigbee_spec::ids::EndpointId(1),
+            source_endpoint: EndpointId(1),
             profile: rszigbee_spec::ids::ProfileId::HA,
             cluster: encode::PROBE_CLUSTER,
             frame: encode::probe(0),
@@ -739,6 +884,17 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
     }
 
     // ---- interview
+
+    /// Resolves the definition for a device from what the interview learned.
+    ///
+    /// Re-resolved rather than cached: resolution is a hash lookup plus a few
+    /// comparisons, and a cache would have to be invalidated every time a
+    /// device's facts changed — which is exactly when getting it wrong matters.
+    fn resolve(&self, ieee: Ieee) -> Option<&Definition> {
+        let entry = self.devices.get(ieee)?;
+        self.definitions
+            .resolve(&definitions::device_match(&entry.info))
+    }
 
     /// Applies one interview update. The only place interview results are
     /// written, and it runs on the loop.
@@ -778,11 +934,39 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                         entry.info.endpoints.clone_from(&outcome.endpoints);
                         entry.info.endpoints.sort_by_key(|e| e.id);
                     }
+                    // The model string, which is what a definition matches on.
+                    if let Some(basic) = &outcome.basic {
+                        entry.info.basic = basic.clone();
+                    }
                 }
                 self.persist(ieee).await;
                 self.emit(Event::InterviewFinished {
                     ieee,
                     state: outcome.state,
+                });
+
+                // Resolution happens here rather than mid-interview because it
+                // needs the model *and* the endpoints: some fingerprints match
+                // on the endpoint layout.
+                let resolved = self
+                    .resolve(ieee)
+                    .map(|d| (d.model.clone(), d.is_complete()));
+                if let Some((model, complete)) = &resolved
+                    && !complete
+                {
+                    debug!(
+                        %ieee,
+                        model,
+                        "definition matched but is incomplete: some behaviour is not expressed"
+                    );
+                }
+                // Emitted either way. An unrecognised device still produces raw
+                // events, and this is the signal that what it needs is a
+                // definition.
+                self.emit(Event::DefinitionResolved {
+                    ieee,
+                    model: resolved.map(|(model, _)| model),
+                    source: crate::event::DefinitionSource::Bundled,
                 });
             }
         }

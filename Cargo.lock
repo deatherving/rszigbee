@@ -577,6 +577,7 @@ name = "rszigbee-core"
 version = "0.0.1"
 dependencies = [
  "rszigbee-adapter",
+ "rszigbee-devices",
  "rszigbee-spec",
  "serde",
  "serde_json",

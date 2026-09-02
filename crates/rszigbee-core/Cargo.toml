@@ -15,6 +15,7 @@ categories = ["network-programming"]
 [dependencies]
 rszigbee-spec.workspace = true
 rszigbee-adapter.workspace = true
+rszigbee-devices.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }

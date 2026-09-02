@@ -202,6 +202,39 @@ pub fn attribute_write(
     .encode())
 }
 
+/// Encodes a planned command into a cluster-specific ZCL frame.
+///
+/// The payload comes from the plan, which derived it from the definition; this
+/// only adds the header. Keeping the two apart means the mapping can be tested
+/// without an encoder and the encoder without a definition.
+pub fn planned(tsn: u8, command: CommandId, payload: &[u8]) -> Vec<u8> {
+    ZclFrame {
+        header: ZclHeader::command(tsn, command),
+        payload,
+    }
+    .encode()
+}
+
+/// A `read attributes` frame for an arbitrary attribute list.
+///
+/// Foundation command, so it needs no registry lookup and works against a
+/// device with no definition — which is exactly the situation it is used in:
+/// reading `genBasic` is how a device's model is learned, and the model is what
+/// resolves a definition in the first place.
+pub fn read_attributes(tsn: u8, attributes: &[AttrId]) -> Vec<u8> {
+    const READ_ATTRIBUTES: CommandId = CommandId(0x00);
+
+    let mut writer = Writer::new();
+    for attribute in attributes {
+        writer.u16_le(attribute.0);
+    }
+    ZclFrame {
+        header: ZclHeader::global(tsn, READ_ATTRIBUTES),
+        payload: &writer.into_vec(),
+    }
+    .encode()
+}
+
 /// A `read attributes` frame, used by the availability probe.
 ///
 /// `genBasic.zclVersion` is mandatory on every Zigbee device, so this needs no
