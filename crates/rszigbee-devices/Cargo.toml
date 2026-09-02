@@ -1,0 +1,45 @@
+[package]
+name = "rszigbee-devices"
+description = "Declarative Zigbee device definitions and the matcher that resolves one for a device."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["zigbee", "devices", "definitions"]
+categories = ["network-programming", "embedded"]
+
+# Depends on `rszigbee-spec` only, so it stays sans-IO and testable on its own.
+# It deliberately does *not* depend on `rszigbee-core`: definitions are consumed
+# by the runtime, so the dependency runs core -> devices, and a cycle would be
+# the alternative.
+[dependencies]
+rszigbee-spec.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tracing.workspace = true
+
+[dependencies.serde]
+workspace = true
+features = ["derive", "std"]
+optional = true
+
+[features]
+default = []
+# Definitions loadable at runtime rather than compiled in. Off by default
+# because the built-in set is generated Rust, and an embedded caller should not
+# link a deserialiser it never uses.
+serde = ["dep:serde", "rszigbee-spec/serde"]
+
+# Test-only: the differential test reads harvested fixtures. Nothing in the
+# library parses JSON.
+[dev-dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = "1"
+
+[[test]]
+name = "upstream_differential"
+required-features = ["serde"]
+
+[lints]
+workspace = true

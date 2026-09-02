@@ -16,6 +16,7 @@ readme = "../../README.md"
 [dependencies]
 rszigbee-core.workspace = true
 rszigbee-adapter.workspace = true
+rszigbee-devices.workspace = true
 rszigbee-spec.workspace = true
 rszigbee-adapter-ember = { workspace = true, optional = true }
 

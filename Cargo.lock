@@ -541,6 +541,7 @@ dependencies = [
  "rszigbee-adapter",
  "rszigbee-adapter-ember",
  "rszigbee-core",
+ "rszigbee-devices",
  "rszigbee-spec",
  "tokio",
  "tracing-subscriber",
@@ -582,6 +583,17 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rszigbee-devices"
+version = "0.0.1"
+dependencies = [
+ "rszigbee-spec",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tracing",
 ]
 

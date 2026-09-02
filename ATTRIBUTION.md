@@ -16,6 +16,18 @@ importer. Every generated definition file carries a provenance header naming the
 upstream version and source. This is permitted by the MIT licence with
 attribution, and attribution is the least of what is owed.
 
+**Resolution order.** Which definition claims a given device is decided by
+upstream's algorithm, reimplemented in `rszigbee-devices` from its documented
+behaviour rather than translated. `crates/rszigbee-devices/tests/fixtures/`
+holds test-only data harvested by *running* upstream's resolver over its own
+catalogue, so that our answers can be checked against its answers rather than
+against our reading of its source. Regenerate with
+`scripts/refresh-device-fixtures.sh`.
+
+Matching upstream exactly is not deference for its own sake: a device that
+resolves here to a different definition than it does there behaves differently
+for no reason its owner could see.
+
 **Practical commitment:** where rszigbee's differential testing finds a genuine
 bug in an upstream definition — and it will, because differential testing is good
 at that — the fix goes upstream, not only into rszigbee. Quietly harvesting a

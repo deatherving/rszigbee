@@ -36,11 +36,16 @@ Working against the mock coordinator, so verifiable anywhere:
 - Incoming ZCL decoded to typed attributes and named commands
 - Reachability, with the availability policy injected
 
-Not built yet: device definitions, so capability commands (`SetOn` and friends)
-are refused rather than guessed — the ZCL escape hatch works. No MQTT layer, no
-Home Assistant discovery.
+Device definitions: the format and the matcher exist, and resolution is
+verified against zigbee-herdsman-converters' own resolver across its whole
+catalogue — **6,942 devices, agreeing on both which definition matches and what
+the unit is called, with zero disagreements**. The transcoder that fills the
+definitions in does not exist yet, so capability commands (`SetOn` and friends)
+are still refused rather than guessed; the ZCL escape hatch works today.
 
-225 tests, none of which need hardware.
+No MQTT layer, no Home Assistant discovery.
+
+254 tests, none of which need hardware.
 
 ## Crates
 
@@ -72,7 +77,8 @@ while let Some(event) = events.recv().await {
 | `rszigbee-spec` | ZCL and ZDO codecs, cluster registry, address types. Sans-IO |
 | `rszigbee-adapter` | the `CoordinatorAdapter` trait and a mock adapter |
 | `rszigbee-adapter-ember` | Silicon Labs EmberZNet, via EZSP over ASHv2 |
-| `rszigbee-core` | device, capability, state, event, command, reachability, persistence |
+| `rszigbee-core` | the runtime, device model, state, events, commands, reachability, persistence |
+| `rszigbee-devices` | declarative device definitions and the matcher |
 
 ## Boundaries
 
@@ -135,6 +141,17 @@ file is quarantined and startup continues. A corrupt *network* file stops
 startup, because continuing means forming a new network. 64-bit values are
 written as hex strings — an extended PAN id exceeds 2^53, where a JSON consumer
 using doubles corrupts it silently.
+
+**Device support is data, and coverage is a number rather than a hope.**
+Definitions are declarative, and the format expresses exactly the five things
+upstream's catalogue actually needs — helper references, Tuya datapoint tables,
+a bind/report table, endpoint name maps, and a Rust escape hatch. Those were
+chosen by measuring zigbee-herdsman-converters, not guessed: shared helpers
+alone plateau at 57.9% of its 4,473 definitions no matter how many are
+implemented, while the four declarative forms together reach roughly the high
+seventies. The remaining fifth is genuinely code, so a definition that could
+not be fully expressed carries `Extend::Unsupported` and reports itself as
+incomplete instead of silently half-working.
 
 **One task owns the adapter; everything else is a handle.**
 `CoordinatorAdapter` takes `&mut self` because a coordinator is one serial port

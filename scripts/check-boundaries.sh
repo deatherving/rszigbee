@@ -77,11 +77,16 @@ grep -qiE '^(ezsp|ashv2) ' <<<"$(tree rszigbee-core)$(tree rszigbee-adapter)$(tr
 # --- the facade must expose every internal crate a user needs ---
 if [ -d crates/rszigbee ]; then
   facade="$(tree rszigbee)"
-  for needed in rszigbee-core rszigbee-adapter rszigbee-spec; do
-    grep -q "^${needed} " <<<"$facade" \
-      || bad "the rszigbee facade does not re-export ${needed}"
+  # Tracked rather than reported per crate, so a failure does not print
+  # alongside an "ok" for the same check and leave the reader guessing.
+  missing=0
+  for needed in rszigbee-core rszigbee-adapter rszigbee-spec rszigbee-devices; do
+    if ! grep -q "^${needed} " <<<"$facade"; then
+      bad "the rszigbee facade does not re-export ${needed}"
+      missing=1
+    fi
   done
-  ok "the facade covers the internal crates"
+  [ "$missing" -eq 0 ] && ok "the facade covers the internal crates"
 fi
 
 # --- rszigbee-spec is sans-IO ---

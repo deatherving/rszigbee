@@ -18,7 +18,8 @@
 //! | [`spec`] | nothing but codecs | tokio, serial, I/O of any kind |
 //! | [`adapter`] | `spec` | a concrete coordinator protocol |
 //! | `rszigbee-adapter-ember` | `ezsp`, `ashv2`, `tokio-serial` | — |
-//! | [`core`] | `adapter`, `spec` | MQTT, JSON, Home Assistant, **EZSP** |
+//! | [`devices`] | `spec` | `rszigbee-core`, so definitions stay data |
+//! | [`core`] | `adapter`, `spec`, `devices` | MQTT, JSON, Home Assistant, **EZSP** |
 //!
 //! The last row is the point. `rszigbee-core` does not know EZSP exists; only
 //! the Ember adapter does, and the [`CoordinatorAdapter`] trait is the seam.
@@ -85,6 +86,14 @@ pub mod core {
     pub use rszigbee_core::*;
 }
 
+/// Device definitions and the matcher that resolves one for a device.
+///
+/// Resolution is verified to agree with `zigbee-herdsman-converters` across its
+/// whole catalogue; see that crate's differential test.
+pub mod devices {
+    pub use rszigbee_devices::*;
+}
+
 /// Silicon Labs `EmberZNet` coordinators (EZSP over `ASHv2`).
 ///
 /// This is the only module in the public API that knows EZSP exists.
@@ -108,6 +117,7 @@ pub use rszigbee_core::{
     EventStream, InterviewOutcome, MemoryStore, PersistedDevice, PersistedNetwork, Reachability,
     RuntimeError, StateChanges, StateValue, StoreError, Zigbee, ZigbeeBuilder, ZigbeeStore,
 };
+pub use rszigbee_devices::{Definition, DefinitionIndex, DeviceMatch};
 pub use rszigbee_spec::ids::{ClusterId, EndpointId, GroupId, Ieee, Nwk};
 
 #[cfg(test)]
