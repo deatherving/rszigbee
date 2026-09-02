@@ -57,6 +57,14 @@ pub use definition::{
     WhiteLabel,
 };
 pub use index::{DefinitionIndex, IndexError};
+
+/// Identifier types a definition is written in terms of.
+///
+/// Re-exported so writing a definition by hand does not require depending on
+/// `rszigbee-spec` directly.
+pub mod reexport {
+    pub use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, ProfileId};
+}
 pub use matcher::{
     DeviceMatch, EndpointMatch, Fingerprint, FingerprintEndpoint, MatchRules, index_key,
     normalise_model,

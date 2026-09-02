@@ -41,5 +41,9 @@ serde_json = "1"
 name = "upstream_differential"
 required-features = ["serde"]
 
+[[test]]
+name = "claimed_primitives"
+required-features = ["serde"]
+
 [lints]
 workspace = true

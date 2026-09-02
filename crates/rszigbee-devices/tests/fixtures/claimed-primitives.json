@@ -1,0 +1,25 @@
+{
+ "extends": [
+  "Battery",
+  "Binary",
+  "Co2",
+  "DeviceEndpoints",
+  "ElectricityMeter",
+  "EnumLookup",
+  "Humidity",
+  "IasZoneAlarm",
+  "Identify",
+  "Illuminance",
+  "Light",
+  "Numeric",
+  "Occupancy",
+  "OnOff",
+  "SoilMoisture",
+  "Temperature"
+ ],
+ "tuyaConverterKinds": [
+  "Bool",
+  "Enum",
+  "Value"
+ ]
+}
