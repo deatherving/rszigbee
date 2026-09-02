@@ -5,11 +5,29 @@
 set -euo pipefail
 
 fail=0
-note() { printf '  %s\n' "$*"; }
-bad()  { printf 'FAIL: %s\n' "$*"; fail=1; }
-ok()   { printf 'ok:   %s\n' "$*"; }
+# All diagnostics go to stderr: `tree` is called inside a command
+# substitution, and anything it writes to stdout would be captured into the
+# caller's variable instead of shown.
+note() { printf '  %s\n' "$*" >&2; }
+bad()  { printf 'FAIL: %s\n' "$*" >&2; fail=1; }
+ok()   { printf 'ok:   %s\n' "$*" >&2; }
 
-tree() { cargo tree --quiet -p "$1" --edges normal --prefix none 2>/dev/null | sort -u; }
+# A dependency check that silently sees an empty tree passes vacuously, which
+# is worse than no check at all. Fail loudly instead.
+tree() {
+  local out
+  if ! out=$(cargo tree --quiet -p "$1" --edges normal --prefix none 2>&1); then
+    bad "cannot resolve the dependency tree for '$1'"
+    note "cargo tree said: $(head -2 <<<"$out" | tr '\n' ' ')"
+    note "Every boundary check below would pass vacuously, so stopping."
+    exit 1
+  fi
+  if [ -z "$out" ]; then
+    bad "the dependency tree for '$1' is empty; the checks would pass vacuously"
+    exit 1
+  fi
+  sort -u <<<"$out"
+}
 
 # --- rszigbee-core must not reach MQTT, JSON, or Home Assistant ---
 core="$(tree rszigbee-core)"
@@ -22,6 +40,31 @@ done
 grep -qi 'homeassistant\|home-assistant' <<<"$core" \
   && bad "rszigbee-core depends on a Home Assistant crate" \
   || ok "rszigbee-core is free of MQTT, JSON and Home Assistant"
+
+# --- EZSP must be contained in the Ember adapter ---
+# The rule the architecture rests on: core and the adapter trait do not know
+# EZSP exists. Only rszigbee-adapter-ember does.
+for crate in rszigbee-core rszigbee-adapter rszigbee-spec; do
+  t="$(tree "$crate")"
+  for forbidden in ezsp ashv2 tokio-serial serialport; do
+    if grep -qi "^${forbidden} " <<<"$t"; then
+      bad "$crate depends on '${forbidden}'"
+      note "Coordinator protocols belong in rszigbee-adapter-<family> only."
+    fi
+  done
+done
+grep -qiE '^(ezsp|ashv2) ' <<<"$(tree rszigbee-core)$(tree rszigbee-adapter)$(tree rszigbee-spec)" \
+  || ok "EZSP is contained in the Ember adapter"
+
+# --- the facade must expose every internal crate a user needs ---
+if [ -d crates/rszigbee ]; then
+  facade="$(tree rszigbee)"
+  for needed in rszigbee-core rszigbee-adapter rszigbee-spec; do
+    grep -q "^${needed} " <<<"$facade" \
+      || bad "the rszigbee facade does not re-export ${needed}"
+  done
+  ok "the facade covers the internal crates"
+fi
 
 # --- rszigbee-spec is sans-IO ---
 spec="$(tree rszigbee-spec)"

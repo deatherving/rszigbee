@@ -18,6 +18,7 @@ authors = ["The rszigbee contributors"]
 rszigbee-spec = { path = "crates/rszigbee-spec", version = "0.0.1" }
 rszigbee-adapter = { path = "crates/rszigbee-adapter", version = "0.0.1" }
 rszigbee-core = { path = "crates/rszigbee-core", version = "0.0.1" }
+rszigbee-adapter-ember = { path = "crates/rszigbee-adapter-ember", version = "0.0.1" }
 
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }

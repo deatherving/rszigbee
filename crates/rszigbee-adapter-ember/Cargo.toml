@@ -1,0 +1,31 @@
+[package]
+name = "rszigbee-adapter-ember"
+description = "Silicon Labs EmberZNet (EZSP over ASHv2) coordinator adapter for rszigbee."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["zigbee", "ezsp", "ember", "silabs"]
+categories = ["network-programming"]
+
+[dependencies]
+rszigbee-spec.workspace = true
+rszigbee-adapter.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "io-util"] }
+
+# Pinned exactly, not caret. `ezsp` went 10 -> 17 in six weeks with two yanked
+# releases; a range would make a verified-against-hardware build unreproducible.
+# Bumps get re-verified with spikes/ezsp-probe against real firmware.
+ashv2 = { version = "=13.0.0", features = ["ezsp"] }
+ezsp = "=17.0.0"
+tokio-serial = "=5.5.0"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true
