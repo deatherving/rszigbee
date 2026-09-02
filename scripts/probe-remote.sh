@@ -67,7 +67,10 @@ say "port holders and Zigbee services"
 
 # --------------------------------------------------------------------- toolchain
 say "rust toolchain"
-HAS_CARGO=$("${SSH[@]}" 'command -v cargo >/dev/null && cargo --version || echo NONE')
+# rustup installs to ~/.cargo/bin, which a non-login shell does not have on
+# PATH -- sourcing the env file first is what makes this detection correct.
+REMOTE_CARGO_ENV='. "$HOME/.cargo/env" 2>/dev/null || true;'
+HAS_CARGO=$("${SSH[@]}" "$REMOTE_CARGO_ENV command -v cargo >/dev/null && cargo --version || echo NONE")
 echo "$HAS_CARGO"
 if [ "$HAS_CARGO" = "NONE" ]; then
   cat <<EOF
@@ -86,6 +89,31 @@ if [ -z "$PORT_HINT" ]; then
   PORT_HINT=$("${SSH[@]}" 'ls /dev/serial/by-id/* 2>/dev/null | head -1 || ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1 || true')
   [ -z "$PORT_HINT" ] && { echo "no serial port found; pass one explicitly" >&2; exit 3; }
   echo "auto-selected port: $PORT_HINT"
+fi
+
+READABLE=$("${SSH[@]}" "test -r '$PORT_HINT' && test -w '$PORT_HINT' && echo yes || echo no")
+SUDO=""
+if [ "$READABLE" = "no" ]; then
+  if "${SSH[@]}" 'sudo -n true' 2>/dev/null; then
+    SUDO="sudo -n"
+    echo "note: $PORT_HINT needs elevation; passwordless sudo is available"
+  elif [ -n "${SUDOPW:-}" ]; then
+    SUDO="sudo -S -p ''"
+    echo "note: $PORT_HINT needs elevation; using SUDOPW for this run only"
+  else
+    cat >&2 <<EOF
+
+$PORT_HINT is not readable by this account. It is normally root:dialout 660.
+
+Either run the probe with elevation for this one command:
+  SUDOPW=... ./scripts/probe-remote.sh $HOST $PORT_HINT
+
+or make it permanent, which is what a Zigbee install needs anyway:
+  sudo usermod -aG dialout \$(whoami)     # then log out and back in
+
+EOF
+    exit 6
+  fi
 fi
 
 BUSY=$("${SSH[@]}" "command -v fuser >/dev/null && fuser '$PORT_HINT' 2>/dev/null || true")
@@ -112,11 +140,16 @@ tar czf - -C spikes ezsp-probe | "${SSH[@]}" "tar xzf - -C '$REMOTE_DIR'"
 echo "-> $HOST:$REMOTE_DIR/ezsp-probe"
 
 say "building on the remote (first build fetches crates; this takes a while on a Pi)"
-"${SSH[@]}" "cd '$REMOTE_DIR/ezsp-probe' && cargo build --release 2>&1 | tail -5"
+"${SSH[@]}" "$REMOTE_CARGO_ENV cd '$REMOTE_DIR/ezsp-probe' && cargo build --release 2>&1 | tail -5"
 
 say "running the probe (READ-ONLY)"
-"${SSH[@]}" "cd '$REMOTE_DIR/ezsp-probe' && RUST_LOG=\${RUST_LOG:-info} \
-  ./target/release/ezsp-probe '$PORT_HINT' ${PROBE_ARGS[*]:-}" || {
+if [ -n "$SUDO" ] && [ -n "${SUDOPW:-}" ]; then
+  printf '%s\n' "$SUDOPW" | "${SSH[@]}" "cd '$REMOTE_DIR/ezsp-probe' && \
+    $SUDO env RUST_LOG=\${RUST_LOG:-info} ./target/release/ezsp-probe '$PORT_HINT' ${PROBE_ARGS[*]:-}"
+else
+  "${SSH[@]}" "cd '$REMOTE_DIR/ezsp-probe' && $SUDO env RUST_LOG=\${RUST_LOG:-info} \
+    ./target/release/ezsp-probe '$PORT_HINT' ${PROBE_ARGS[*]:-}"
+fi || {
   echo
   echo "probe reported failure. Re-run with RUST_LOG=trace to see whether any"
   echo "ASH bytes arrived at all, which separates wiring from protocol:"

@@ -61,7 +61,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut path = None;
     let mut baud = 115_200;
-    let mut rtscts = true;
+    let mut rtscts = false;
     let mut version = None;
 
     let mut it = std::env::args().skip(1);
@@ -74,6 +74,7 @@ fn parse_args() -> Result<Args> {
                     .parse()
                     .context("--baud must be a number")?;
             }
+            "--rtscts" => rtscts = true,
             "--no-rtscts" => rtscts = false,
             "--ezsp-version" => {
                 version = Some(
@@ -85,7 +86,7 @@ fn parse_args() -> Result<Args> {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: ezsp-probe <serial-path> [--baud N] [--no-rtscts] [--ezsp-version N]"
+                    "usage: ezsp-probe <serial-path> [--baud N] [--rtscts] [--ezsp-version N]"
                 );
                 std::process::exit(0);
             }
@@ -245,10 +246,35 @@ async fn main() -> Result<()> {
         |v| format!("{v}")
     );
 
+    // A blank dongle legitimately refuses getNetworkParameters with
+    // EmberNotJoined. Counting that as a defect sent this probe to the wrong
+    // conclusion once already, so correlate it with the reported network state.
+    let no_network = steps.iter().any(|s| {
+        s.name == "networkState" && matches!(&s.outcome, Ok(d) if d.contains("NoNetwork"))
+    });
+    let expected_failures = steps
+        .iter()
+        .filter(|s| {
+            s.name == "getNetworkParameters"
+                && no_network
+                && matches!(&s.outcome, Err(e) if e.to_string().contains("NotJoined"))
+        })
+        .count();
+
     let all_ok = report(&steps);
+    let real_failures = steps.iter().filter(|s| s.outcome.is_err()).count() - expected_failures;
+
+    if expected_failures > 0 {
+        println!(
+            "\nnote: getNetworkParameters returned NotJoined and networkState is\n\
+             \x20     NoNetwork -- the correct answer for a dongle with no network\n\
+             \x20     formed, not a defect. The adapter must model NotJoined as a\n\
+             \x20     state, not an error."
+        );
+    }
 
     println!();
-    if all_ok {
+    if all_ok || real_failures == 0 {
         println!("VERDICT: the ashv2 + ezsp stack drives this firmware.");
         println!(
             "         EZSP v{}. Proceed with rszigbee-adapter-ember and pin\n\
@@ -256,11 +282,11 @@ async fn main() -> Result<()> {
             negotiated
         );
     } else {
-        println!("VERDICT: partial. Negotiation worked, some commands did not.");
+        println!("VERDICT: partial -- {real_failures} unexplained failure(s).");
         println!(
-            "         Note which. A failure in getNetworkParameters or getValue\n\
-             \x20        means an encoding gap in the crate, and that is the thing\n\
-             \x20        to reproduce as a minimal test and take upstream."
+            "         An unexplained failure in getValue or getConfig means an\n\
+             \x20        encoding gap in the crate. Reproduce it as a minimal test\n\
+             \x20        and take it upstream."
         );
     }
 
@@ -296,6 +322,13 @@ async fn connect_once(args: &Args, want: u8) -> Result<ezsp::Connection> {
 }
 
 /// Opens the serial port with the requested settings.
+///
+/// Note for the adapter: `open(2)` on a tty with hardware flow control can block
+/// in the kernel until CTS is asserted, and `tokio::time::timeout` cannot
+/// interrupt that -- it is not an await point. Observed here as a ten-minute
+/// hang with a five-second timeout configured. The adapter must open on
+/// `spawn_blocking` with its own deadline, and must not assume that a wrong
+/// flow-control setting will surface as an error.
 fn open_port(args: &Args) -> Result<tokio_serial::SerialStream> {
     tokio_serial::new(&args.path, args.baud)
         .flow_control(if args.rtscts {
