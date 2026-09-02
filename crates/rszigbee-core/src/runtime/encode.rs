@@ -15,7 +15,7 @@ use rszigbee_spec::codec::Writer;
 use rszigbee_spec::ids::{AttrId, ClusterId, CommandId, Ieee, ManufacturerCode};
 use rszigbee_spec::zcl::frame::{ZclFrame, ZclHeader};
 use rszigbee_spec::zcl::registry::ClusterRegistry;
-use rszigbee_spec::zcl::types::encode_value;
+use rszigbee_spec::zcl::types::{ZclType, ZclValue, encode_value};
 
 use crate::command::{ZclAttributeWrite, ZclCommand};
 
@@ -200,6 +200,79 @@ pub fn attribute_write(
         payload: &writer.into_vec(),
     }
     .encode())
+}
+
+/// One attribute's reporting configuration, ready to encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportRecord {
+    /// The attribute.
+    pub attribute: AttrId,
+    /// Its wire type, which decides whether a reportable change is even sent.
+    pub ty: ZclType,
+    /// Shortest interval between reports, seconds.
+    pub min_interval: u16,
+    /// Longest interval before the device reports regardless, seconds.
+    pub max_interval: u16,
+    /// Smallest change worth a report. Ignored for discrete types.
+    pub min_change: u64,
+}
+
+/// Encodes a `configureReporting` command.
+///
+/// # The reportable-change field is conditional
+///
+/// ZCL sends it only for *analog* types — integers, floats, times. For a
+/// discrete type such as a boolean or an enum the field is absent entirely, and
+/// including it shifts every following record by its width, so a device either
+/// rejects the frame or configures the wrong attribute. That is why the wire
+/// type travels with each record rather than being assumed.
+///
+/// # Errors
+///
+/// Fails only if a reportable change cannot be encoded as its declared type.
+pub fn configure_reporting(
+    tsn: u8,
+    records: &[ReportRecord],
+) -> Result<Vec<u8>, rszigbee_spec::codec::CodecError> {
+    /// Direction 0x00: the receiver sends reports to us. 0x01 would configure
+    /// the *sender's* expectation of receiving them.
+    const DIRECTION_REPORTED: u8 = 0x00;
+    const CONFIGURE_REPORTING: CommandId = CommandId(0x06);
+
+    let mut writer = Writer::new();
+    for record in records {
+        writer.u8(DIRECTION_REPORTED);
+        writer.u16_le(record.attribute.0);
+        writer.u8(record.ty.to_u8());
+        writer.u16_le(record.min_interval);
+        writer.u16_le(record.max_interval);
+        if is_analog(record.ty) {
+            let value = match record.ty {
+                ZclType::Int(_) => {
+                    ZclValue::Int(i64::try_from(record.min_change).unwrap_or(i64::MAX))
+                }
+                _ => ZclValue::Uint(record.min_change),
+            };
+            encode_value(&value, record.ty, &mut writer)?;
+        }
+    }
+    Ok(ZclFrame {
+        header: ZclHeader::global(tsn, CONFIGURE_REPORTING),
+        payload: &writer.into_vec(),
+    }
+    .encode())
+}
+
+/// Whether a type carries a reportable change.
+///
+/// Analog in ZCL terms: anything with a magnitude that can differ *by* an
+/// amount. A boolean changing is not a change of some size, so no field is
+/// sent for it.
+const fn is_analog(ty: ZclType) -> bool {
+    matches!(
+        ty,
+        ZclType::Uint(_) | ZclType::Int(_) | ZclType::Single | ZclType::Time(_)
+    )
 }
 
 /// Encodes a planned command into a cluster-specific ZCL frame.

@@ -15,11 +15,14 @@
 //! Refusals are typed and name what was missing, so "this device does not do
 //! that" is distinguishable from "rszigbee cannot express that yet".
 
-use rszigbee_devices::{Definition, DeviceMatch, Extend};
+use rszigbee_devices::{Definition, DeviceMatch, Extend, NumericSpec};
 use rszigbee_spec::ids::{AttrId, ClusterId, CommandId, EndpointId};
+use rszigbee_spec::zcl::types::{ZclType, ZclValue};
 
+use crate::capability::CapabilityId;
 use crate::command::{CommandError, DeviceCommand};
 use crate::device::DeviceInfo;
+use crate::state::StateValue;
 
 /// `genOnOff`.
 const ON_OFF: ClusterId = ClusterId(0x0006);
@@ -27,6 +30,44 @@ const ON_OFF: ClusterId = ClusterId(0x0006);
 const LEVEL: ClusterId = ClusterId(0x0008);
 /// `genIdentify`.
 const IDENTIFY: ClusterId = ClusterId(0x0003);
+
+/// Where one capability's value comes from on the wire.
+///
+/// The canonical cluster, attribute, type **and scaling** for a capability live
+/// here rather than in the definition, because they are implied by the helper
+/// rather than stated by it: upstream's `m.temperature()` takes no arguments
+/// and still means "cluster 0x0402, attribute 0x0000, hundredths of a degree".
+///
+/// Getting the scaling from here is not a convenience. ZCL carries 21.37 °C as
+/// the integer 2137, so a missing divisor reports 2137 °C — and a definition
+/// transcoded from a zero-argument helper has no divisor to give.
+#[derive(Debug, Clone)]
+pub struct Source {
+    /// The capability this feeds.
+    pub capability: &'static str,
+    /// Cluster it is read from.
+    pub cluster: ClusterId,
+    /// Attribute within the cluster.
+    pub attribute: AttrId,
+    /// Wire type, needed to configure reporting.
+    pub ty: ZclType,
+    /// How the raw value becomes a real quantity.
+    pub value: ValueShape,
+}
+
+/// How a raw attribute value becomes a [`StateValue`].
+#[derive(Debug, Clone)]
+pub enum ValueShape {
+    /// Scaled number.
+    Numeric(NumericSpec),
+    /// Boolean, with the raw value meaning true.
+    Boolean {
+        /// The raw value that means true.
+        on: i64,
+    },
+    /// Named value.
+    Named(Vec<(i64, String)>),
+}
 
 /// A command lowered to a ZCL frame, ready for the adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +91,13 @@ pub struct ConfigureStep {
     pub cluster: ClusterId,
     /// Attribute to configure reporting for, when there is one.
     pub attribute: Option<AttrId>,
+    /// The attribute's wire type.
+    ///
+    /// Carried on the step rather than looked up later, because the registry
+    /// does not know every cluster a definition can name — soil moisture and
+    /// CO2 are not in the built-in set — and configuring reporting with the
+    /// wrong type produces a frame the device rejects.
+    pub attribute_type: Option<ZclType>,
     /// Shortest reporting interval, seconds.
     pub min_interval: u16,
     /// Longest interval before the device reports anyway, seconds.
@@ -89,6 +137,205 @@ pub fn device_match(info: &DeviceInfo) -> DeviceMatch {
         })
         .collect();
     m
+}
+
+/// Every capability a definition's `extend` list implies, with its wiring.
+///
+/// This is the sensor path's counterpart to [`plan_command`]: one place that
+/// decides which attribute feeds which capability, so an inbound report and an
+/// outbound reporting configuration cannot disagree about it.
+#[must_use]
+pub fn sources(definition: &Definition) -> Vec<Source> {
+    let mut out = Vec::new();
+    for extend in &definition.extend {
+        if let Some(mut implied) = well_known(extend) {
+            out.append(&mut implied);
+            continue;
+        }
+        match extend {
+            // These carry their own wiring, so nothing is implied.
+            Extend::Numeric {
+                name,
+                cluster,
+                attribute,
+                spec,
+                ..
+            } => out.push(Source {
+                capability: leak(name),
+                cluster: *cluster,
+                attribute: *attribute,
+                ty: ZclType::Int(2),
+                value: ValueShape::Numeric(spec.clone()),
+            }),
+            Extend::Binary {
+                name,
+                cluster,
+                attribute,
+                value_on,
+                ..
+            } => out.push(Source {
+                capability: leak(name),
+                cluster: *cluster,
+                attribute: *attribute,
+                ty: ZclType::Bool,
+                value: ValueShape::Boolean { on: *value_on },
+            }),
+            Extend::EnumLookup {
+                name,
+                cluster,
+                attribute,
+                values,
+                ..
+            } => out.push(Source {
+                capability: leak(name),
+                cluster: *cluster,
+                attribute: *attribute,
+                ty: ZclType::Enum8,
+                value: ValueShape::Named(values.clone()),
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A scaled numeric source.
+fn numeric(
+    capability: &'static str,
+    cluster: u16,
+    attribute: u16,
+    ty: ZclType,
+    divisor: i64,
+) -> Source {
+    let mut spec = NumericSpec::default();
+    spec.divisor = divisor;
+    Source {
+        capability,
+        cluster: ClusterId(cluster),
+        attribute: AttrId(attribute),
+        ty,
+        value: ValueShape::Numeric(spec),
+    }
+}
+
+/// A boolean source at attribute zero.
+fn boolean(capability: &'static str, cluster: u16, ty: ZclType) -> Source {
+    Source {
+        capability,
+        cluster: ClusterId(cluster),
+        attribute: AttrId(0x0000),
+        ty,
+        value: ValueShape::Boolean { on: 1 },
+    }
+}
+
+/// The capabilities whose cluster, attribute, type and scaling are implied by
+/// the helper rather than stated by it.
+///
+/// Divisors come from the ZCL specification, which is where upstream's helpers
+/// get them too: temperature and humidity are hundredths, and battery
+/// percentage is doubled so a raw 200 means 100%.
+fn well_known(extend: &Extend) -> Option<Vec<Source>> {
+    Some(match extend {
+        Extend::Temperature(_) => {
+            vec![numeric("temperature", 0x0402, 0x0000, ZclType::Int(2), 100)]
+        }
+        Extend::Humidity(_) => vec![numeric("humidity", 0x0405, 0x0000, ZclType::Uint(2), 100)],
+        Extend::SoilMoisture(_) => {
+            vec![numeric(
+                "soil_moisture",
+                0x0408,
+                0x0000,
+                ZclType::Uint(2),
+                100,
+            )]
+        }
+        Extend::Co2(_) => vec![numeric("co2", 0x040d, 0x0000, ZclType::Single, 1)],
+        Extend::Illuminance(_) => vec![numeric("illuminance", 0x0400, 0x0000, ZclType::Uint(2), 1)],
+        Extend::Battery { voltage } => {
+            let mut out = vec![numeric("battery", 0x0001, 0x0021, ZclType::Uint(1), 2)];
+            if *voltage {
+                out.push(numeric("voltage", 0x0001, 0x0020, ZclType::Uint(1), 10));
+            }
+            out
+        }
+        Extend::Occupancy => vec![boolean("occupancy", 0x0406, ZclType::Bitmap(1))],
+        Extend::OnOff { .. } => vec![boolean("state", 0x0006, ZclType::Bool)],
+        Extend::Light { brightness, .. } => {
+            let mut out = vec![boolean("state", 0x0006, ZclType::Bool)];
+            if *brightness {
+                out.push(numeric("brightness", 0x0008, 0x0000, ZclType::Uint(1), 1));
+            }
+            out
+        }
+        _ => return None,
+    })
+}
+
+/// Interns a definition-supplied capability name.
+///
+/// Definitions are loaded once and live for the process, so a leak here is
+/// bounded by the catalogue rather than by traffic. The alternative is making
+/// [`Source::capability`] an owned `String` and cloning it on every inbound
+/// report, which is the hot path.
+fn leak(name: &str) -> &'static str {
+    Box::leak(name.to_owned().into_boxed_str())
+}
+
+/// Converts a reported attribute into a capability value.
+///
+/// Returns `None` when the definition does not say this attribute feeds
+/// anything — which is normal: devices report attributes nobody modelled, and
+/// inventing a capability name for them would put junk into a caller's state.
+#[must_use]
+pub fn report_to_state(
+    definition: &Definition,
+    cluster: ClusterId,
+    attribute: u16,
+    value: &ZclValue,
+) -> Option<(CapabilityId, StateValue)> {
+    let source = sources(definition)
+        .into_iter()
+        .find(|s| s.cluster == cluster && s.attribute.0 == attribute)?;
+
+    // An "invalid" encoding means the device is saying "no reading". Reported
+    // as null rather than as zero, which would read as a real measurement of
+    // nothing, or dropped, which would look like the device went quiet.
+    if value.is_invalid() {
+        return Some((CapabilityId::from(source.capability), StateValue::Null));
+    }
+
+    let state = match &source.value {
+        ValueShape::Numeric(spec) => {
+            let raw = value
+                .as_int()
+                .or_else(|| value.as_uint().and_then(|v| i64::try_from(v).ok()))?;
+            StateValue::Float(spec.apply(raw))
+        }
+        ValueShape::Boolean { on } => {
+            let raw = value
+                .as_uint()
+                .and_then(|v| i64::try_from(v).ok())
+                .or_else(|| value.as_int())
+                .or_else(|| match value {
+                    ZclValue::Bool(b) => Some(i64::from(*b)),
+                    _ => None,
+                })?;
+            StateValue::Bool(raw == *on)
+        }
+        ValueShape::Named(values) => {
+            let raw = value
+                .as_uint()
+                .and_then(|v| i64::try_from(v).ok())
+                .or_else(|| value.as_int())?;
+            let name = values
+                .iter()
+                .find(|(v, _)| *v == raw)
+                .map(|(_, name)| name.clone())?;
+            StateValue::Enum(name)
+        }
+    };
+    Some((CapabilityId::from(source.capability), state))
 }
 
 /// Whether the definition says this device has on/off, and on which endpoints.
@@ -221,7 +468,13 @@ pub fn plan_command(
 /// silent forever, which is the most common way a working device looks broken.
 #[must_use]
 pub fn configure_plan(definition: &Definition, info: &DeviceInfo) -> Vec<ConfigureStep> {
-    let mut steps = Vec::new();
+    let mut steps: Vec<ConfigureStep> = Vec::new();
+    let mut seen: std::collections::HashSet<(EndpointId, ClusterId, Option<AttrId>)> =
+        std::collections::HashSet::new();
+
+    // Explicit bindings first, so that where a definition states an interval
+    // its value wins over the default below. The definition knows more about
+    // the device than a default does.
     for binding in &definition.bindings {
         // An endpoint the device does not have cannot be bound. Emitting the
         // step anyway would produce a guaranteed failure at join time.
@@ -233,6 +486,7 @@ pub fn configure_plan(definition: &Definition, info: &DeviceInfo) -> Vec<Configu
                 endpoint: binding.endpoint,
                 cluster: binding.cluster,
                 attribute: None,
+                attribute_type: None,
                 min_interval: 0,
                 max_interval: 0,
                 min_change: 0,
@@ -244,20 +498,66 @@ pub fn configure_plan(definition: &Definition, info: &DeviceInfo) -> Vec<Configu
                 endpoint: binding.endpoint,
                 cluster: binding.cluster,
                 attribute: Some(reporting.attribute),
+                // An explicit binding does not state a type, so it is resolved
+                // from the capability sources when one names the same
+                // attribute, and left to the caller otherwise.
+                attribute_type: sources(definition)
+                    .iter()
+                    .find(|s| s.cluster == binding.cluster && s.attribute == reporting.attribute)
+                    .map(|s| s.ty),
                 min_interval: reporting.min_interval,
                 max_interval: reporting.max_interval,
                 min_change: reporting.min_change,
             });
         }
     }
+    for step in &steps {
+        seen.insert((step.endpoint, step.cluster, step.attribute));
+    }
+
+    // Then what the capabilities imply. This is the half that matters most:
+    // upstream's `m.temperature()` configures reporting as part of what it
+    // means, and a definition transcoded from it has an empty `bindings` list.
+    // Without this a device joins, interviews, resolves, advertises a
+    // temperature capability -- and never reports a temperature, which is
+    // indistinguishable from a broken sensor.
+    for source in sources(definition) {
+        let endpoint = info
+            .endpoint_with_input(source.cluster)
+            .map_or(EndpointId(1), |e| e.id);
+        let key = (endpoint, source.cluster, Some(source.attribute));
+        if !seen.insert(key) {
+            continue;
+        }
+        steps.push(ConfigureStep {
+            endpoint,
+            cluster: source.cluster,
+            attribute: Some(source.attribute),
+            attribute_type: Some(source.ty),
+            min_interval: DEFAULT_MIN_INTERVAL,
+            max_interval: DEFAULT_MAX_INTERVAL,
+            // Report any change. A threshold suppresses small movements, and
+            // choosing one is per-device tuning the definition does not do.
+            min_change: 0,
+        });
+    }
     steps
 }
+
+/// Ten seconds. Short enough that a state change is prompt, long enough that a
+/// chatty device cannot saturate the network.
+const DEFAULT_MIN_INTERVAL: u16 = 10;
+
+/// An hour. This is the number availability depends on: until it elapses, a
+/// device that only reports on change is indistinguishable from a dead one.
+const DEFAULT_MAX_INTERVAL: u16 = 3600;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::command::Brightness;
     use crate::device::{DeviceKind, EndpointInfo};
+    use crate::state::StateValue;
     use rszigbee_spec::ids::{Ieee, Nwk, ProfileId};
 
     fn light_definition() -> Definition {
@@ -277,7 +577,7 @@ mod tests {
     fn sensor_definition() -> Definition {
         let mut d = Definition::new("TS0601_soil");
         d.match_rules.models = vec!["TS0601".into()];
-        d.extend = vec![Extend::Temperature(rszigbee_devices::NumericSpec::default())];
+        d.extend = vec![Extend::Temperature(NumericSpec::default())];
         d
     }
 
@@ -419,22 +719,126 @@ mod tests {
     }
 
     #[test]
+    fn a_capability_implies_its_reporting_even_with_no_explicit_binding() {
+        // The failure this exists to prevent, end to end: a device that joins,
+        // interviews, resolves a definition, advertises a temperature -- and
+        // then never reports one, because nothing configured reporting.
+        //
+        // Upstream's `m.temperature()` configures reporting as part of what it
+        // means, and a definition transcoded from it has no `bindings` at all.
+        let definition = sensor_definition();
+        assert!(
+            definition.bindings.is_empty(),
+            "the premise: this definition has no explicit binding"
+        );
+
+        let plan = configure_plan(&definition, &device(&[0x0000, 0x0402]));
+        let temperature = plan
+            .iter()
+            .find(|s| s.cluster == ClusterId(0x0402))
+            .expect("temperature reporting must be planned from the capability alone");
+        assert_eq!(temperature.attribute, Some(AttrId(0x0000)));
+        assert!(temperature.max_interval > 0);
+        assert_eq!(
+            temperature.endpoint,
+            EndpointId(1),
+            "the endpoint that hosts the cluster"
+        );
+    }
+
+    #[test]
+    fn a_temperature_report_is_scaled_even_though_the_definition_carries_no_divisor() {
+        // `m.temperature()` takes no arguments, so the transcoded definition
+        // has `NumericSpec::default()` with a divisor of one. The divisor is
+        // implied by the capability, and if it were taken from the definition
+        // this would report 2137 degrees.
+        let (capability, value) = report_to_state(
+            &sensor_definition(),
+            ClusterId(0x0402),
+            0x0000,
+            &ZclValue::Int(2137),
+        )
+        .expect("temperature is a modelled capability");
+        assert_eq!(capability.as_str(), "temperature");
+        match value {
+            StateValue::Float(v) => assert!((v - 21.37).abs() < 1e-9, "got {v}"),
+            other => panic!("expected a float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_attribute_nothing_models_is_ignored_rather_than_invented() {
+        // Devices report attributes nobody modelled. Making up a capability
+        // name for them puts junk in a caller's state.
+        assert!(
+            report_to_state(
+                &sensor_definition(),
+                ClusterId(0x0402),
+                0x0099,
+                &ZclValue::Int(1)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn an_invalid_reading_becomes_null_not_zero() {
+        // 0x8000 for an int16 means "no reading". Zero would read as a real
+        // measurement; dropping it would look like the device went quiet.
+        let (_, value) = report_to_state(
+            &sensor_definition(),
+            ClusterId(0x0402),
+            0x0000,
+            &ZclValue::Invalid(ZclType::Int(2)),
+        )
+        .expect("still a modelled capability");
+        assert_eq!(value, StateValue::Null);
+    }
+
+    #[test]
+    fn an_on_off_report_becomes_a_boolean_state() {
+        let (capability, value) = report_to_state(
+            &light_definition(),
+            ClusterId(0x0006),
+            0x0000,
+            &ZclValue::Bool(true),
+        )
+        .expect("a light reports state");
+        assert_eq!(capability.as_str(), "state");
+        assert_eq!(value, StateValue::Bool(true));
+    }
+
+    #[test]
+    fn a_battery_percentage_is_halved_because_zcl_doubles_it() {
+        let mut definition = sensor_definition();
+        definition.extend.push(Extend::Battery { voltage: false });
+        let (capability, value) =
+            report_to_state(&definition, ClusterId(0x0001), 0x0021, &ZclValue::Uint(200))
+                .expect("battery is modelled");
+        assert_eq!(capability.as_str(), "battery");
+        // 200 raw is 100%, not 200%.
+        assert_eq!(value, StateValue::Float(100.0));
+    }
+
+    #[test]
     fn the_configure_plan_lists_a_step_per_reported_attribute() {
         let mut definition = sensor_definition();
         let mut binding = rszigbee_devices::Binding::default();
         binding.endpoint = EndpointId(1);
         binding.cluster = ClusterId(0x0402);
-        binding.reporting = vec![
-            rszigbee_devices::Reporting::default(),
-            rszigbee_devices::Reporting::default(),
-        ];
+        // Two distinct attributes; the same one twice would be a meaningless
+        // duplicate and is collapsed.
+        let mut second = rszigbee_devices::Reporting::default();
+        second.attribute = AttrId(0x0001);
+        binding.reporting = vec![rszigbee_devices::Reporting::default(), second];
         definition.bindings = vec![binding];
 
         let plan = configure_plan(&definition, &device(&[0x0402]));
-        assert_eq!(plan.len(), 2);
-        assert_eq!(plan[0].cluster, ClusterId(0x0402));
+        // One implied by the temperature capability, plus the explicit ones.
+        assert!(plan.len() >= 2, "{plan:?}");
+        assert!(plan.iter().all(|s| s.cluster == ClusterId(0x0402)));
         assert!(
-            plan[0].max_interval > 0,
+            plan.iter().all(|s| s.max_interval > 0),
             "a max interval of zero makes a dead device indistinguishable from a quiet one"
         );
     }
@@ -447,8 +851,15 @@ mod tests {
         binding.cluster = ClusterId(0x0402);
         definition.bindings = vec![binding];
 
-        // Emitting it would be a guaranteed failure at join time.
-        assert!(configure_plan(&definition, &device(&[0x0402])).is_empty());
+        // Emitting it would be a guaranteed failure at join time. The
+        // capability-implied step for endpoint 1 is still there, which is
+        // correct -- only the impossible binding is dropped.
+        let plan = configure_plan(&definition, &device(&[0x0402]));
+        assert!(
+            plan.iter().all(|s| s.endpoint != EndpointId(7)),
+            "a binding for an endpoint the device lacks must be dropped: {plan:?}"
+        );
+        assert!(!plan.is_empty(), "the implied step should survive");
     }
 
     #[test]

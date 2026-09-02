@@ -9,8 +9,9 @@ pub mod codec;
 
 pub use codec::{
     ActiveEndpoints, LogicalType, NodeDescriptor, SimpleDescriptor, ZdoError, decode_active_ep_rsp,
-    decode_node_desc_rsp, decode_simple_desc_rsp, encode_active_ep_req, encode_leave_req,
-    encode_node_desc_req, encode_permit_joining_req, encode_simple_desc_req,
+    decode_bind_rsp, decode_node_desc_rsp, decode_simple_desc_rsp, encode_active_ep_req,
+    encode_bind_req, encode_leave_req, encode_node_desc_req, encode_permit_joining_req,
+    encode_simple_desc_req,
 };
 
 /// A ZDO cluster identifier. Responses are the request id with bit 15 set.

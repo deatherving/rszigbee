@@ -122,6 +122,60 @@ impl NodeDescriptor {
     }
 }
 
+/// Encodes a `Bind_req`, binding a device's cluster to a destination.
+///
+/// A binding is what tells a device where to send its reports. Without one,
+/// configuring reporting succeeds on many devices and then nothing arrives:
+/// the device dutifully generates reports and has nowhere to send them. That
+/// failure is indistinguishable from a broken sensor, which is why binding is
+/// not optional.
+///
+/// `source` names the device's own cluster instance; `destination` is where
+/// reports should go, which on a coordinator-managed network is the
+/// coordinator.
+#[must_use]
+pub fn encode_bind_req(
+    sequence: u8,
+    source: Ieee,
+    source_endpoint: EndpointId,
+    cluster: ClusterId,
+    destination: Ieee,
+    destination_endpoint: EndpointId,
+) -> Vec<u8> {
+    /// Address mode 3: a 64-bit address plus an endpoint. Mode 1 is a group
+    /// binding, which carries no endpoint and is not what this encodes.
+    const UNICAST_WITH_ENDPOINT: u8 = 0x03;
+
+    let mut w = Writer::with_capacity(22);
+    w.u8(sequence);
+    w.u64_le(source.raw());
+    w.u8(source_endpoint.0);
+    w.u16_le(cluster.0);
+    w.u8(UNICAST_WITH_ENDPOINT);
+    w.u64_le(destination.raw());
+    w.u8(destination_endpoint.0);
+    w.into_vec()
+}
+
+/// Decodes a `Bind_rsp`, which carries only a sequence and a status.
+///
+/// # Errors
+///
+/// [`ZdoError::Truncated`] if the frame is shorter than that, and
+/// [`ZdoError::Status`] when the device refused the binding. The two are
+/// distinct because a refusal is the device answering, and a device that
+/// refuses a binding often still works for everything else.
+pub fn decode_bind_rsp(payload: &[u8]) -> Result<u8, ZdoError> {
+    let mut r = Reader::new(payload);
+    let sequence = r.u8()?;
+    let status = ZdoStatus::from_u8(r.u8()?);
+    if status.is_success() {
+        Ok(sequence)
+    } else {
+        Err(ZdoError::Status { sequence, status })
+    }
+}
+
 /// Decodes a `Node_Desc_rsp` payload.
 ///
 /// Layout: sequence, status, address, then the 13-octet descriptor.

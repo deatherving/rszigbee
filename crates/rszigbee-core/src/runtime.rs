@@ -143,6 +143,10 @@ enum Request {
     Device(Ieee, oneshot::Sender<Option<DeviceInfo>>),
     Network(oneshot::Sender<Result<crate::adapter::NetworkInfo, AdapterError>>),
     Definition(Ieee, oneshot::Sender<Option<(String, bool)>>),
+    Configure(
+        Ieee,
+        oneshot::Sender<Result<ConfigureOutcome, RuntimeError>>,
+    ),
     ConfigurePlan(Ieee, oneshot::Sender<Vec<ConfigureStep>>),
     PermitJoin {
         duration: Duration,
@@ -184,6 +188,22 @@ enum Request {
         update: Box<InterviewUpdate>,
     },
     Stop(oneshot::Sender<Result<(), RuntimeError>>),
+}
+
+/// What executing a configure plan achieved.
+///
+/// Both numbers are reported because a partial result is the common one: a
+/// device that refuses one binding and accepts three is configured well enough
+/// to work, and a caller that only saw "failed" would retry pointlessly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ConfigureOutcome {
+    /// Bindings the device accepted.
+    pub bound: usize,
+    /// Attributes whose reporting was configured.
+    pub configured: usize,
+    /// Steps that failed.
+    pub failed: usize,
 }
 
 /// A subscription to the runtime's event stream.
@@ -608,6 +628,26 @@ impl Zigbee {
         let (tx, rx) = oneshot::channel();
         self.request(Request::Definition(ieee, tx)).await?;
         rx.await.map_err(|_| RuntimeError::Stopped)
+    }
+
+    /// Executes the device's configure plan: bind, then configure reporting.
+    ///
+    /// Run automatically when an interview resolves a definition. Exposed as
+    /// well because configuration does not always survive: a device that was
+    /// power-cycled or rejoined may have lost its bindings, and re-running
+    /// this is the fix. Idempotent — binding an already-bound cluster and
+    /// reconfiguring reporting are both no-ops on the device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the runtime has stopped or the device is unknown. Individual
+    /// step failures are counted in the outcome rather than failing the call:
+    /// devices refuse bindings routinely, and abandoning the plan on the first
+    /// refusal would leave later, working steps unconfigured.
+    pub async fn configure(&self, ieee: Ieee) -> Result<ConfigureOutcome, RuntimeError> {
+        let (tx, rx) = oneshot::channel();
+        self.request(Request::Configure(ieee, tx)).await?;
+        rx.await.map_err(|_| RuntimeError::Stopped)?
     }
 
     /// The bindings and reporting a device's definition asks for.
@@ -1326,13 +1366,30 @@ mod definition_integration {
         let (zigbee, _control) =
             runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0006]).await).await;
         let plan = zigbee.configure_plan(BULB).await.expect("plan");
-        assert_eq!(plan.len(), 1, "{plan:?}");
-        assert_eq!(plan[0].cluster, ClusterId(0x0006));
-        assert_eq!(plan[0].endpoint, EndpointId(1));
+
+        // On/off from the explicit binding, brightness implied by the `Light`
+        // capability. A dimmable light that reports its state but not its
+        // brightness shows the wrong level after anyone uses the wall switch.
         assert!(
-            plan[0].max_interval > 0,
+            plan.iter().any(|s| s.cluster == ClusterId(0x0006)),
+            "on/off reporting must be planned: {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|s| s.cluster == ClusterId(0x0008)),
+            "brightness reporting must be planned: {plan:?}"
+        );
+        assert!(plan.iter().all(|s| s.endpoint == EndpointId(1)));
+        assert!(
+            plan.iter().all(|s| s.max_interval > 0),
             "without a max interval a silent device is indistinguishable from a dead one"
         );
+        // The explicit binding and the implied `state` source name the same
+        // attribute, and configuring it twice is meaningless.
+        let on_off: Vec<_> = plan
+            .iter()
+            .filter(|s| s.cluster == ClusterId(0x0006))
+            .collect();
+        assert_eq!(on_off.len(), 1, "duplicate reporting config: {on_off:?}");
     }
 
     // ---- 5. unknown or unsupported never silently falls back
@@ -1451,6 +1508,176 @@ mod definition_integration {
             .await
             .expect_err("an unexpressed capability must be refused");
         assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+    }
+
+    // ---- the sensor path: bind, configure reporting, report, StateChanged
+
+    /// Drives an interview to completion against a scripted mock, so the
+    /// configure plan actually executes.
+    ///
+    /// The mock answers every ZDO request with `Ok(None)` and every ZCL send
+    /// with `Ok(None)`, which is what the Ember adapter does; the interview
+    /// steps then time out, but resolution still happens from the store's
+    /// model string, which is what this exercises.
+    #[tokio::test]
+    async fn binding_and_reporting_are_configured_for_a_recognised_sensor() {
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(
+            adapter,
+            events,
+            stored(SENSOR, "TS0601", &[0x0000, 0x0402]).await,
+        )
+        .definitions(index())
+        .interview_on_join(false)
+        .start()
+        .await
+        .expect("start");
+
+        // The plan is what execution follows, so assert on it first.
+        let plan = zigbee.configure_plan(SENSOR).await.expect("plan");
+        assert!(
+            plan.iter().any(|s| s.cluster == ClusterId(0x0402)),
+            "a temperature capability must imply temperature reporting: {plan:?}"
+        );
+
+        // Now run it. No replies are queued: the mock's default is `Ok(None)`
+        // for both send paths, which is what the Ember adapter does. Queueing
+        // them would interleave two kinds in one queue and the mock rightly
+        // rejects a mismatch.
+        let outcome = zigbee.configure(SENSOR).await.expect("configure");
+        assert!(outcome.bound > 0, "at least one binding: {outcome:?}");
+        assert!(
+            outcome.configured > 0,
+            "at least one attribute: {outcome:?}"
+        );
+
+        // A bind for the temperature cluster...
+        let zdo = control.zdo_sent();
+        let bind = zdo
+            .iter()
+            .find(|tx| tx.cluster == ZdoClusterId::BIND_REQ)
+            .expect("a Bind_req must be sent, or reports have nowhere to go");
+        // sequence, source IEEE, source endpoint, cluster
+        // sequence(1) + source IEEE(8) + source endpoint(1) + cluster(2)
+        // + address mode(1) + destination IEEE(8) + destination endpoint(1)
+        assert_eq!(bind.payload.len(), 22, "{:?}", bind.payload);
+        let cluster = u16::from_le_bytes([bind.payload[10], bind.payload[11]]);
+        assert_eq!(cluster, 0x0402);
+        // Address mode 3: a 64-bit address plus an endpoint.
+        assert_eq!(bind.payload[12], 0x03);
+
+        // ...and a configureReporting for its attribute.
+        let zcl = control.zcl_sent();
+        let configure = zcl
+            .iter()
+            .find(|tx| tx.cluster == ClusterId(0x0402) && tx.frame.get(2) == Some(&0x06))
+            .expect("configureReporting must be sent, or the device reports only on poll");
+        // direction, attribute, type, min, max
+        assert_eq!(configure.frame[3], 0x00, "direction: reported to us");
+        let attribute = u16::from_le_bytes([configure.frame[4], configure.frame[5]]);
+        assert_eq!(attribute, 0x0000);
+        let max = u16::from_le_bytes([configure.frame[8], configure.frame[9]]);
+        assert!(max > 0, "a zero max interval hides a dead device");
+    }
+
+    #[tokio::test]
+    async fn a_temperature_report_becomes_a_typed_state_change() {
+        // The whole sensor path in one test: the definition says this device
+        // has a temperature, a report arrives, and a caller sees 21.37 rather
+        // than cluster 0x0402 attribute 0x0000 = 2137.
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(
+            adapter,
+            events,
+            stored(SENSOR, "TS0601", &[0x0000, 0x0402]).await,
+        )
+        .definitions(index())
+        .interview_on_join(false)
+        .start()
+        .await
+        .expect("start");
+        let mut stream = zigbee.events();
+
+        // msTemperatureMeasurement.measuredValue = 2137, an int16.
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0402),
+            group: None,
+            was_broadcast: false,
+            link_quality: Some(180),
+            frame: vec![0x18, 0x07, 0x0a, 0x00, 0x00, 0x29, 0x59, 0x08],
+        }));
+
+        let changes = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match stream.recv().await {
+                    Some(Event::StateChanged { changes, .. }) => return changes,
+                    Some(_) => {}
+                    None => panic!("the stream closed before a state change"),
+                }
+            }
+        })
+        .await
+        .expect("a modelled attribute must produce a state change");
+
+        let value = changes
+            .get(&crate::capability::CapabilityId::from("temperature"))
+            .expect("the capability the definition names");
+        assert_eq!(
+            value.as_f64(),
+            Some(21.37),
+            "the divisor is implied by the capability, not stated by the definition"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unmodelled_attribute_produces_no_state_change_but_still_an_event() {
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(
+            adapter,
+            events,
+            stored(SENSOR, "TS0601", &[0x0000, 0x0402]).await,
+        )
+        .definitions(index())
+        .interview_on_join(false)
+        .start()
+        .await
+        .expect("start");
+        let mut stream = zigbee.events();
+
+        // Cluster the definition says nothing about.
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0405),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame: vec![0x18, 0x08, 0x0a, 0x00, 0x00, 0x21, 0x10, 0x27],
+        }));
+
+        // A raw event, yes; invented state, no.
+        let mut saw_raw = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(40), stream.recv()).await {
+                Ok(Some(Event::StateChanged { changes, .. })) => {
+                    panic!("an unmodelled attribute must not invent state: {changes:?}")
+                }
+                Ok(Some(Event::ZclMessage(_))) => saw_raw = true,
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(
+            saw_raw,
+            "the frame must still surface, or nobody can model the attribute"
+        );
     }
 
     // ---- the read path, which is what makes a model string exist at all

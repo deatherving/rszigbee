@@ -33,7 +33,8 @@ use tracing::{debug, info, warn};
 
 use super::inventory::{self, Inventory};
 use super::{
-    InterviewOutcome, InterviewUpdate, Request, RuntimeError, ZDO_TIMEOUT, Zigbee, interview,
+    ConfigureOutcome, InterviewOutcome, InterviewUpdate, Request, RuntimeError, ZDO_TIMEOUT,
+    Zigbee, interview,
 };
 use super::{decode, definitions, encode};
 use crate::adapter::{AdapterError, AdapterEvent, CoordinatorAdapter, StartOutcome};
@@ -280,6 +281,14 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             }
             Request::InterviewUpdate { ieee, update } => {
                 self.apply_interview_update(ieee, *update).await;
+            }
+            Request::Configure(ieee, reply) => {
+                if self.devices.get(ieee).is_none() {
+                    let _ = reply.send(Err(RuntimeError::UnknownDevice(ieee)));
+                    return;
+                }
+                let outcome = self.execute_configure_plan(ieee).await;
+                let _ = reply.send(Ok(outcome));
             }
             Request::Definition(ieee, reply) => {
                 let _ = reply.send(
@@ -717,6 +726,12 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         match decode::zcl_message(&self.registry, ieee, &rx) {
             Ok(message) => {
                 self.touch(ieee, SystemTime::now(), LastSeenReason::Message);
+                // The sensor path's last link: an attribute report becomes
+                // typed capability state, so a caller sees `temperature: 21.37`
+                // and not a cluster id and an integer.
+                if let crate::event::ZclMessageKind::Attributes(attributes) = &message.kind {
+                    self.publish_state(ieee, rx.endpoint, rx.cluster, attributes);
+                }
                 self.emit(Event::ZclMessage(message));
             }
             Err(reason) => {
@@ -885,6 +900,224 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
 
     // ---- interview
 
+    /// Turns reported attributes into a capability state delta.
+    ///
+    /// Only attributes the definition actually models produce state. An
+    /// unmodelled attribute is left to [`Event::ZclMessage`], which still
+    /// carries it: inventing a capability name would put junk into a caller's
+    /// state, and dropping the frame would lose the only evidence anyone has
+    /// for modelling it.
+    ///
+    /// The event carries the delta, never a merged snapshot. Publishing a
+    /// snapshot is a compatibility behaviour that belongs to the MQTT layer.
+    fn publish_state(
+        &mut self,
+        ieee: Ieee,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attributes: &[(u16, ZclValue)],
+    ) {
+        let Some(definition) = self.resolve(ieee) else {
+            return;
+        };
+
+        let mut changes = crate::state::StateChanges::new();
+        for (attribute, value) in attributes {
+            if let Some((capability, state)) =
+                definitions::report_to_state(definition, cluster, *attribute, value)
+            {
+                changes.set(capability, state);
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+
+        // The endpoint is reported only when the device has more than one:
+        // on a single-endpoint device it is noise, and on a multi-endpoint one
+        // it is the difference between two identical capabilities.
+        let multi = self
+            .devices
+            .get(ieee)
+            .is_some_and(|e| e.info.endpoints.len() > 1);
+        self.emit(Event::StateChanged {
+            ieee,
+            endpoint: multi.then_some(endpoint),
+            changes,
+        });
+    }
+
+    /// Binds and configures reporting, so the device actually sends data.
+    ///
+    /// Runs after resolution, because the plan comes from the definition. Both
+    /// halves are needed and in this order: a binding tells the device where
+    /// to send reports, and configuring reporting tells it when. Configure
+    /// without bind and the device generates reports with nowhere to send
+    /// them; bind without configure and many devices report only on a poll.
+    ///
+    /// A failure on one step is logged and the rest continue. Devices refuse
+    /// bindings and reporting configuration routinely -- some because they
+    /// report unconditionally and consider it meaningless -- and abandoning
+    /// the whole plan on the first refusal would leave later, working steps
+    /// unconfigured.
+    async fn execute_configure_plan(&mut self, ieee: Ieee) -> ConfigureOutcome {
+        let Some(definition) = self.resolve(ieee) else {
+            return ConfigureOutcome::default();
+        };
+        let Some(entry) = self.devices.get(ieee) else {
+            return ConfigureOutcome::default();
+        };
+        let plan = definitions::configure_plan(definition, &entry.info);
+        if plan.is_empty() {
+            return ConfigureOutcome::default();
+        }
+
+        let device_nwk = entry.info.nwk;
+        let coordinator = self.coordinator;
+        let mut bound: std::collections::HashSet<(EndpointId, ClusterId)> =
+            std::collections::HashSet::new();
+        let mut outcome = ConfigureOutcome::default();
+
+        for step in plan {
+            // One binding per (endpoint, cluster), however many attributes on
+            // it are being configured.
+            if bound.insert((step.endpoint, step.cluster)) {
+                match self
+                    .bind(ieee, device_nwk, step.endpoint, step.cluster, coordinator)
+                    .await
+                {
+                    Ok(()) => {
+                        debug!(%ieee, cluster = step.cluster.0, "bound");
+                        outcome.bound = outcome.bound.saturating_add(1);
+                    }
+                    Err(e) => {
+                        warn!(%ieee, cluster = step.cluster.0, error = %e, "bind failed");
+                        outcome.failed = outcome.failed.saturating_add(1);
+                    }
+                }
+            }
+
+            let Some(attribute) = step.attribute else {
+                continue;
+            };
+            // The wire type decides whether a reportable change is sent at
+            // all, so a wrong type produces a frame the device rejects. The
+            // plan carries it; the registry is only a fallback, because it
+            // does not know every cluster a definition can name.
+            let ty = step.attribute_type.or_else(|| {
+                self.registry
+                    .attr(Some(ieee), step.cluster, attribute)
+                    .map(|a| a.ty)
+            });
+            let Some(ty) = ty else {
+                warn!(
+                    %ieee,
+                    cluster = step.cluster.0,
+                    attribute = attribute.0,
+                    "no wire type known, so reporting cannot be configured safely"
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            };
+
+            match self
+                .configure_reporting(
+                    ieee,
+                    device_nwk,
+                    step.endpoint,
+                    step.cluster,
+                    &[encode::ReportRecord {
+                        attribute,
+                        ty,
+                        min_interval: step.min_interval,
+                        max_interval: step.max_interval,
+                        min_change: step.min_change,
+                    }],
+                )
+                .await
+            {
+                Ok(()) => outcome.configured = outcome.configured.saturating_add(1),
+                Err(e) => {
+                    warn!(
+                        %ieee,
+                        cluster = step.cluster.0,
+                        attribute = attribute.0,
+                        error = %e,
+                        "configuring reporting failed"
+                    );
+                    outcome.failed = outcome.failed.saturating_add(1);
+                }
+            }
+        }
+
+        info!(
+            %ieee,
+            bound = outcome.bound,
+            configured = outcome.configured,
+            failed = outcome.failed,
+            "reporting configured"
+        );
+        outcome
+    }
+
+    /// Sends a `Bind_req` and waits for its response.
+    async fn bind(
+        &mut self,
+        ieee: Ieee,
+        nwk: Nwk,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        coordinator: Ieee,
+    ) -> Result<(), AdapterError> {
+        self.zdo_sequence = self.zdo_sequence.wrapping_add(1);
+        let sequence = self.zdo_sequence;
+        let payload = rszigbee_spec::zdo::encode_bind_req(
+            sequence,
+            ieee,
+            endpoint,
+            cluster,
+            coordinator,
+            // The coordinator's own application endpoint, which is where the
+            // Ember adapter registers its clusters.
+            EndpointId(1),
+        );
+        self.adapter
+            .send_zdo(crate::adapter::ZdoTx {
+                dest: crate::adapter::Destination::Unicast { ieee, nwk },
+                cluster: ZdoClusterId::BIND_REQ,
+                payload,
+                options: crate::adapter::TxOptions::default(),
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// Sends a `configureReporting` command.
+    async fn configure_reporting(
+        &mut self,
+        ieee: Ieee,
+        nwk: Nwk,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        records: &[encode::ReportRecord],
+    ) -> Result<(), AdapterError> {
+        self.zcl_sequence = self.zcl_sequence.wrapping_add(1);
+        let frame = encode::configure_reporting(self.zcl_sequence, records)
+            .map_err(|e| AdapterError::Transport(format!("cannot encode reporting config: {e}")))?;
+        self.adapter
+            .send_zcl(crate::adapter::ZclTx {
+                dest: crate::adapter::Destination::Unicast { ieee, nwk },
+                endpoint,
+                source_endpoint: EndpointId(1),
+                profile: rszigbee_spec::ids::ProfileId::HA,
+                cluster,
+                frame,
+                options: crate::adapter::TxOptions::default(),
+            })
+            .await
+            .map(|_| ())
+    }
+
     /// Resolves the definition for a device from what the interview learned.
     ///
     /// Re-resolved rather than cached: resolution is a hash lookup plus a few
@@ -960,6 +1193,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                         "definition matched but is incomplete: some behaviour is not expressed"
                     );
                 }
+                let matched = resolved.is_some();
                 // Emitted either way. An unrecognised device still produces raw
                 // events, and this is the signal that what it needs is a
                 // definition.
@@ -968,6 +1202,13 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                     model: resolved.map(|(model, _)| model),
                     source: crate::event::DefinitionSource::Bundled,
                 });
+
+                // Resolving a definition is only half of making a sensor work.
+                // The other half is binding and configuring reporting, without
+                // which the device is recognised and permanently silent.
+                if matched {
+                    let _ = self.execute_configure_plan(ieee).await;
+                }
             }
         }
     }
