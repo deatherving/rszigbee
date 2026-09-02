@@ -11,6 +11,12 @@ cargo fmt --all
 
 All four have to pass. None of them need Zigbee hardware.
 
+Run `rustup update stable` first. `rust-toolchain.toml` tracks stable rather
+than pinning a version, and CI runs `clippy -D warnings` with `pedantic` on, so
+a new stable can introduce a lint that fails CI on a change that had nothing to
+do with it. An older local toolchain will not reproduce it. The floor is
+enforced separately by the MSRV job, currently 1.90.
+
 ## Device support belongs upstream first
 
 If a device does not work, the fix almost always belongs in

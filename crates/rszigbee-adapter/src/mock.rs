@@ -183,6 +183,11 @@ impl MockAdapter {
     }
 }
 
+// Every method is async because `CoordinatorAdapter` says so -- a real adapter
+// awaits a serial port. A synchronous fake has nothing to await and still has
+// to match the signature, so the lint has no fix to offer that would not make
+// the mock worse to read.
+#[allow(clippy::unused_async_trait_impl)]
 impl CoordinatorAdapter for MockAdapter {
     async fn start(
         &mut self,
@@ -492,6 +497,9 @@ mod tests {
         // Install codes are supported by the mock, so use a fresh adapter that
         // declares them unsupported to exercise the default body.
         struct Bare;
+        // Same as the mock: the signatures come from the trait, and this stub
+        // exists precisely to have nothing in its bodies.
+        #[allow(clippy::unused_async_trait_impl)]
         impl CoordinatorAdapter for Bare {
             async fn start(
                 &mut self,

@@ -278,6 +278,8 @@ impl ZigbeeStore for FileStore {
             .map_err(|_| StoreError::BackupNotFound(id.to_owned()))
     }
 
+    // Nothing to await, deliberately: see the body.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn flush(&self) -> Result<(), StoreError> {
         // Every write is already fsynced and renamed before returning, so there
         // is nothing buffered. Kept as a no-op rather than removed so a

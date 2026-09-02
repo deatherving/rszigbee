@@ -285,6 +285,10 @@ impl MemoryStore {
     }
 }
 
+// `ZigbeeStore` is async because a real backend awaits a disk or a socket.
+// This one is a `Mutex` around some maps, so nothing awaits, and the signatures
+// are still fixed by the trait.
+#[allow(clippy::unused_async_trait_impl)]
 impl ZigbeeStore for MemoryStore {
     async fn load_network(&self) -> Result<Option<PersistedNetwork>, StoreError> {
         self.with(|i| i.network.clone())
