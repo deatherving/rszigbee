@@ -14,10 +14,9 @@ library with a typed API, and a Zigbee2MQTT-compatible MQTT gateway.
          Rust apps    Zigbee2MQTT-compatible MQTT
 ```
 
-> **Status: early.** The coordinator adapter, the protocol codecs and
-> persistence work against real hardware. The device-compatibility engine and
-> the MQTT layer do not exist yet. Not usable as a gateway. See
-> [Status](#status).
+> **Status: early.** The runtime, the coordinator adapter, the protocol codecs
+> and persistence work. The device-compatibility engine and the MQTT layer do
+> not exist yet. Not usable as a gateway. See [Status](#status).
 
 ## Status
 
@@ -28,10 +27,20 @@ Verified on a Sonoff ZBDongle-E (EFR32MG21, EmberZNet 7.4.4.0, EZSP v13):
 - ZDO round trips — node descriptor, active endpoints, simple descriptors
 - Persistence surviving a restart
 
-Not built yet: the runtime task that ties these together, device definitions,
-`send_zcl` against a real device, the MQTT layer, Home Assistant discovery.
+Working against the mock coordinator, so verifiable anywhere:
 
-208 tests, none of which need hardware.
+- The runtime: `Zigbee::builder(...)`, one task owning the adapter, a cloneable
+  handle, an event stream per consumer
+- The device table, with short-address resolution and rejoin handling
+- ZDO interview — node descriptor, endpoints, simple descriptors
+- Incoming ZCL decoded to typed attributes and named commands
+- Reachability, with the availability policy injected
+
+Not built yet: device definitions, so capability commands (`SetOn` and friends)
+are refused rather than guessed — the ZCL escape hatch works. No MQTT layer, no
+Home Assistant discovery.
+
+225 tests, none of which need hardware.
 
 ## Crates
 
@@ -40,6 +49,21 @@ You depend on one crate. The rest are internal boundaries.
 ```toml
 [dependencies]
 rszigbee = { version = "0.0", features = ["ember"] }
+```
+
+```rust,ignore
+let (adapter, adapter_events) = EmberAdapter::serial("/dev/ttyUSB0").build();
+let store = FileStore::open("./rszigbee-data").await?;
+
+// The default refuses to form a network, because forming one when we should
+// have resumed orphans every joined device.
+let zigbee = Zigbee::builder(adapter, adapter_events, store).start().await?;
+zigbee.permit_join(Duration::from_secs(60), None).await?;
+
+let mut events = zigbee.events();
+while let Some(event) = events.recv().await {
+    println!("{event:?}");
+}
 ```
 
 | Crate | Role |
@@ -112,6 +136,14 @@ startup, because continuing means forming a new network. 64-bit values are
 written as hex strings — an extended PAN id exceeds 2^53, where a JSON consumer
 using doubles corrupts it silently.
 
+**One task owns the adapter; everything else is a handle.**
+`CoordinatorAdapter` takes `&mut self` because a coordinator is one serial port
+with one framing state machine — concurrent use is a protocol violation, not a
+performance question. Rather than a lock, whose ordering is an accident of
+scheduling, one task owns it and `Zigbee` is a cheap clone that asks. Interviews
+run *outside* that loop: a ZDO response arrives as an adapter event, so awaiting
+one inside the loop would deadlock on a message only the loop can deliver.
+
 **The three traits carry a conformance suite, not just a signature.**
 `ZigbeeStore` has two backends, and `store::conformance` asserts the promises
 callers rely on — upsert updates in place, deleting something absent succeeds,
@@ -134,9 +166,17 @@ Against real hardware:
 cargo run -p rszigbee --example ember_selftest -- /dev/ttyUSB0
 ```
 
-`ember_selftest` interviews the coordinator over ZDO, which needs no other
-device on the network. `spikes/ezsp-probe` is a read-only probe for checking
-whether a dongle speaks EZSP at all; it is safe against a live network.
+Without any hardware:
+
+```sh
+cargo run -p rszigbee --example runtime_mock
+```
+
+`runtime_mock` drives the whole runtime against a mock coordinator — a join, a
+temperature report, a rejoin at a new short address. `ember_selftest` interviews
+the real coordinator over ZDO, which needs no other device on the network.
+`spikes/ezsp-probe` is a read-only probe for checking whether a dongle speaks
+EZSP at all; it is safe against a live network.
 
 ## Credit
 

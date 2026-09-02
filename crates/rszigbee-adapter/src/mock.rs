@@ -54,6 +54,20 @@ impl core::fmt::Debug for MockHandle {
 }
 
 impl MockHandle {
+    /// Delivers an event as though the coordinator had reported it.
+    ///
+    /// This is how a test drives the runtime: joins, leaves, incoming frames
+    /// and a dropped link all reach the runtime through the same channel a real
+    /// adapter uses, so nothing under test knows it is not talking to hardware.
+    ///
+    /// Returns `false` if the receiver is gone or its buffer is full. A full
+    /// buffer is deliberately not an error here for the same reason it is not
+    /// one in a real adapter: the channel is bounded, and a slow consumer must
+    /// drop rather than grow.
+    pub fn emit(&self, event: AdapterEvent) -> bool {
+        self.events.try_send(event).is_ok()
+    }
+
     /// Queues the next `send_zcl` result.
     pub fn reply_zcl(&self, r: Result<Option<ZclRx>, AdapterError>) {
         if let Ok(mut s) = self.shared.lock() {

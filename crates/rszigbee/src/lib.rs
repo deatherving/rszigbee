@@ -26,37 +26,40 @@
 //!
 //! # Status
 //!
-//! Early. The types, the codecs, persistence and the Ember adapter's lifecycle
-//! work against real hardware; the runtime that drives them does not exist yet,
-//! so there is no `Zigbee::builder()`. What works today is the adapter
-//! directly:
+//! Early. The runtime, the codecs, persistence and the Ember adapter's
+//! lifecycle work; the device-compatibility engine and the MQTT layer do not
+//! exist yet, so capability-level commands (`SetOn` and friends) are refused
+//! rather than guessed. The ZCL escape hatch works today.
 //!
 //! ```no_run
-//! use rszigbee::adapter::{CoordinatorAdapter, MismatchPolicy, NetworkConfig};
+//! use std::time::Duration;
+//!
 //! use rszigbee::ember::EmberAdapter;
+//! use rszigbee::{Event, FileStore, Zigbee};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Serial settings come from a fingerprint table, because guessing hardware
 //! // flow control wrong is a kernel-level hang rather than an error.
-//! let (mut adapter, mut events) = EmberAdapter::serial("/dev/ttyUSB0").build();
+//! let (adapter, adapter_events) = EmberAdapter::serial("/dev/ttyUSB0").build();
+//! let store = FileStore::open("./rszigbee-data").await?;
 //!
-//! let outcome = adapter
-//!     .start(
-//!         &NetworkConfig {
-//!             pan_id: None,
-//!             extended_pan_id: None,
-//!             channel: 11,
-//!             network_key: None,
-//!             // Refuse to form a network we did not mean to form.
-//!             on_mismatch: MismatchPolicy::Fail,
-//!         },
-//!         None,
-//!     )
-//!     .await?;
-//! println!("coordinator {} ({outcome:?})", adapter.coordinator_ieee().await?);
+//! // The default refuses to form a network: forming one when we should have
+//! // resumed orphans every joined device.
+//! let zigbee = Zigbee::builder(adapter, adapter_events, store).start().await?;
+//! println!("coordinator {} ({:?})", zigbee.coordinator(), zigbee.start_outcome());
 //!
+//! zigbee.permit_join(Duration::from_secs(60), None).await?;
+//!
+//! let mut events = zigbee.events();
 //! while let Some(event) = events.recv().await {
-//!     println!("{event:?}");
+//!     match event {
+//!         Event::DeviceJoined { ieee, .. } => println!("joined: {ieee}"),
+//!         Event::InterviewFinished { ieee, state } => {
+//!             println!("{ieee} interviewed: {state:?}");
+//!         }
+//!         Event::ZclMessage(message) => println!("{message:?}"),
+//!         other => println!("{other:?}"),
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -102,8 +105,8 @@ pub use rszigbee_adapter::{
 pub use rszigbee_core::FileStore;
 pub use rszigbee_core::{
     Brightness, Capability, CapabilityId, CommandError, DeviceCommand, DeviceInfo, Event,
-    MemoryStore, PersistedDevice, PersistedNetwork, Reachability, StateChanges, StateValue,
-    StoreError, ZigbeeStore,
+    EventStream, InterviewOutcome, MemoryStore, PersistedDevice, PersistedNetwork, Reachability,
+    RuntimeError, StateChanges, StateValue, StoreError, Zigbee, ZigbeeBuilder, ZigbeeStore,
 };
 pub use rszigbee_spec::ids::{ClusterId, EndpointId, GroupId, Ieee, Nwk};
 

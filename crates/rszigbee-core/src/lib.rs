@@ -35,6 +35,7 @@ pub mod command;
 pub mod device;
 pub mod event;
 pub mod reachability;
+pub mod runtime;
 pub mod state;
 pub mod store;
 
@@ -50,6 +51,7 @@ pub use reachability::{
     Assessment, NextCheck, ProbeResult, Reachability, ReachabilityContext, ReachabilityInfo,
     ReachabilityPolicy, SilencePolicy,
 };
+pub use runtime::{EventStream, InterviewOutcome, RuntimeError, Zigbee, ZigbeeBuilder};
 pub use state::{Priority, StateChanges, StateSnapshot, StateValue};
 #[cfg(feature = "file-store")]
 pub use store::FileStore;
@@ -62,7 +64,9 @@ pub use store::{
 /// directly for the handful of types that cross into the public API.
 pub mod adapter {
     pub use rszigbee_adapter::{
-        AdapterCapabilities, AdapterError, AdapterEvent, CoordinatorAdapter, DisconnectReason,
-        MockAdapter, MockHandle, NetworkConfig, StartOutcome, TxFailure,
+        AdapterCapabilities, AdapterError, AdapterEvent, BroadcastAddress, CoordinatorAdapter,
+        Destination, DisconnectReason, FirmwareInfo, MismatchPolicy, MockAdapter, MockHandle,
+        NetworkConfig, NetworkInfo, SendPolicy, StartOutcome, TxConfirm, TxFailure, TxOptions,
+        ZclRx, ZclTx, ZdoTx,
     };
 }
