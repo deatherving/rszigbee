@@ -3,7 +3,9 @@
 //! Read-only: it starts the adapter, reads identity and firmware, and drains
 //! events. It does not form a network, open permit-join, or write anything.
 //!
-//!   cargo run -p rszigbee --example ember_info -- /dev/ttyUSB0
+//! ```text
+//! cargo run -p rszigbee --example ember_info -- /dev/ttyUSB0
+//! ```
 use std::time::Duration;
 
 use rszigbee::adapter::{CoordinatorAdapter, MismatchPolicy, NetworkConfig};

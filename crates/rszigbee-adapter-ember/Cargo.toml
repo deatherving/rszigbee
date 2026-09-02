@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "io-util
 ashv2 = { version = "=13.0.0", features = ["ezsp"] }
 ezsp = "=17.0.0"
 tokio-serial = "=5.5.0"
+getrandom = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util"] }

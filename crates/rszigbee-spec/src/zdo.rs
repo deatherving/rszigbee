@@ -1,8 +1,17 @@
-//! Zigbee Device Objects: the cluster identifiers used for network management.
+//! Zigbee Device Objects: cluster identifiers, request encoders and response
+//! decoders for network management.
 //!
 //! Only the requests the interview and the vertical slice need are enumerated.
 //! The full 116-cluster table plus response codecs is generated from upstream
 //! data in a later phase (README, "What is transcoded, not invented").
+
+pub mod codec;
+
+pub use codec::{
+    ActiveEndpoints, LogicalType, NodeDescriptor, SimpleDescriptor, ZdoError, decode_active_ep_rsp,
+    decode_node_desc_rsp, decode_simple_desc_rsp, encode_active_ep_req, encode_leave_req,
+    encode_node_desc_req, encode_permit_joining_req, encode_simple_desc_req,
+};
 
 /// A ZDO cluster identifier. Responses are the request id with bit 15 set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

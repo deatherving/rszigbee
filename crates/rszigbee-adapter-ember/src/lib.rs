@@ -32,7 +32,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bringup;
 pub mod fingerprint;
+pub mod form;
 mod session;
 
 use std::time::Duration;
@@ -78,6 +80,7 @@ pub struct EmberAdapter {
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     tag: MessageTag,
     coordinator: Option<Ieee>,
+    formed: Option<form::Formed>,
 }
 
 impl std::fmt::Debug for EmberAdapter {
@@ -105,6 +108,17 @@ impl EmberAdapter {
             debug!(path = %path, ?settings, "unrecognised coordinator, using fallback settings");
         }
         EmberAdapterBuilder { path, settings }
+    }
+
+    /// What forming produced, if this start formed a network.
+    ///
+    /// **The caller must persist [`Formed::network_key`].** Losing it loses the
+    /// network: every device joined to it would have to be re-paired. Returns
+    /// `None` when the network was resumed rather than formed, which is the
+    /// normal case.
+    #[must_use]
+    pub const fn formed_network(&self) -> Option<&form::Formed> {
+        self.formed.as_ref()
     }
 
     fn connection(&mut self) -> Result<&mut ezsp::Connection, AdapterError> {
@@ -205,6 +219,7 @@ impl EmberAdapterBuilder {
                 events: tx,
                 tag: MessageTag::default(),
                 coordinator: None,
+                formed: None,
             },
             rx,
         )
@@ -225,6 +240,18 @@ impl CoordinatorAdapter for EmberAdapter {
             .await
             .map_err(|e| map_ezsp(&e))?;
         let coordinator = eui64_to_ieee(eui);
+
+        // Order matters and is not arbitrary. EZSP rejects `addEndpoint` once
+        // the stack is running, so endpoints and identity must be configured
+        // before the network comes up.
+        bringup::configure_endpoints(&mut session.connection, SILABS).await?;
+
+        // Then resume any stored network. Skipping this makes `networkState`
+        // report NoNetwork on a coordinator that has a perfectly good network,
+        // which would lead a stack straight into forming over it. Observed on
+        // real hardware.
+        let stored = bringup::resume_stored_network(&mut session.connection).await?;
+
         let state = session
             .connection
             .network_state()
@@ -234,19 +261,18 @@ impl CoordinatorAdapter for EmberAdapter {
         info!(
             ezsp = session.version,
             coordinator = %coordinator,
+            ?stored,
             ?state,
             "Ember coordinator online"
         );
 
         let outcome = EmberAdapter::outcome_for(state, network.on_mismatch)?;
         if matches!(outcome, StartOutcome::Formed) {
-            // Forming is not implemented yet: it writes the initial security
-            // state and the network key, and getting that wrong is the most
-            // destructive thing this crate can do. Refusing is better than a
-            // half-formed network.
-            return Err(AdapterError::Unsupported(
-                "forming a new network (implemented in a later phase)",
-            ));
+            let formed = form::form(&mut session.connection, coordinator, network).await?;
+            // The caller must persist `network_key`: losing it loses the
+            // network, and every joined device would need re-pairing. Held here
+            // so the runtime can read it back once persistence is wired.
+            self.formed = Some(formed);
         }
 
         self.coordinator = Some(coordinator);
@@ -406,13 +432,49 @@ impl CoordinatorAdapter for EmberAdapter {
         Ok(None)
     }
 
-    async fn send_zdo(&mut self, _request: ZdoTx) -> Result<Option<Vec<u8>>, AdapterError> {
-        // ZDO rides the same sendUnicast path with profile 0 and the ZDO
-        // endpoint, but the payload needs the ZDO transaction sequence number
-        // prepended (see AdapterCapabilities::zdo_sequence_in_payload), and the
-        // response arrives as a callback. Landing with the interview, which is
-        // the first thing that needs it.
-        Err(AdapterError::Unsupported("ZDO send (next increment)"))
+    async fn send_zdo(&mut self, request: ZdoTx) -> Result<Option<Vec<u8>>, AdapterError> {
+        let Destination::Unicast { nwk, .. } = request.dest else {
+            return Err(AdapterError::Unsupported(
+                "broadcast ZDO (implemented with the network map)",
+            ));
+        };
+
+        if request.payload.len() > MAX_APS_PAYLOAD {
+            return Err(AdapterError::Transport(format!(
+                "ZDO payload is {} bytes; EZSP accepts at most {MAX_APS_PAYLOAD}",
+                request.payload.len()
+            )));
+        }
+
+        // ZDO is ordinary APS traffic: profile 0x0000, endpoint 0 both ways,
+        // cluster = the ZDO cluster id. The transaction sequence number is the
+        // first payload byte and is the caller's, because it is what the
+        // caller matches the response against.
+        let aps = ApsFrame::new(
+            0x0000,
+            request.cluster.0,
+            0,
+            0,
+            ApsOptions::RETRY | ApsOptions::ENABLE_ROUTE_DISCOVERY,
+            0,
+            0,
+        );
+        let tag = self.tag.next();
+
+        self.connection()?
+            .send_unicast(
+                EmberDestination::Direct(ezsp::ember::NodeId::from(nwk.raw())),
+                aps,
+                tag,
+                request.payload.iter().copied().collect(),
+            )
+            .await
+            .map_err(|e| map_ezsp(&e))?;
+
+        // Same as send_zcl: EZSP confirms at the APS layer and delivers the
+        // response separately. The runtime matches it from AdapterEvent::Zdo
+        // by the sequence number it put in the payload.
+        Ok(None)
     }
 }
 
@@ -425,6 +487,19 @@ async fn pump_callbacks(
 
     while let Some(cb) = callbacks.recv().await {
         let translated = match &cb {
+            ezsp::Callback::Messaging(Messaging::IncomingMessage(m))
+                if m.aps_frame().profile_id() == 0x0000 =>
+            {
+                // Profile 0 is ZDO, not ZCL. Handing a ZDO frame to a ZCL
+                // decoder produces confident nonsense, so the split happens
+                // here where the profile is still visible.
+                let aps = m.aps_frame();
+                Some(AdapterEvent::Zdo {
+                    cluster: rszigbee_spec::zdo::ZdoClusterId(aps.cluster_id()),
+                    nwk: Nwk::new(m.sender()),
+                    payload: m.message().to_vec(),
+                })
+            }
             ezsp::Callback::Messaging(Messaging::IncomingMessage(m)) => {
                 let aps = m.aps_frame();
                 Some(AdapterEvent::Zcl(ZclRx {
