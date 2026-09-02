@@ -1,0 +1,28 @@
+# Dependency licence policy. The workspace intent is `MIT OR Apache-2.0`
+# throughout (report section 44.5, ADR-0001), so the allow-list is limited to
+# licences compatible with that and with redistribution in a permissive crate.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+# A copyleft dependency would silently change the licence obligations of any
+# crate that links it. If one is ever needed, it needs an ADR first.
+deny = []
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

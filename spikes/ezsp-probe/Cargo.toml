@@ -1,0 +1,20 @@
+[package]
+name = "ezsp-probe"
+description = "Throwaway probe: does the ashv2 + ezsp crate stack actually drive real Silicon Labs firmware?"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Excluded from the workspace (see the root Cargo.toml), so nothing here can be
+# inherited and nothing in the published crates can depend on it. Versions are
+# pinned exactly: `ezsp` went 10 -> 17 in six weeks with two yanked releases, so
+# a caret range would make this probe's result unreproducible.
+[dependencies]
+ashv2 = { version = "=13.0.0", features = ["ezsp"] }
+ezsp = "=17.0.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+tokio-serial = "=5.5.0"
+anyhow = "1"
+env_logger = "0.11"
+log = "0.4"

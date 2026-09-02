@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "spikes/ezsp-probe"]
+# Spikes are throwaway probes against real hardware. Excluded so a broken or
+# fast-moving upstream dependency can never break `cargo test --workspace`,
+# and so nothing in the published crates can accidentally depend on one.
+exclude = ["spikes/ezsp-probe"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rszigbee/rszigbee"
+authors = ["The rszigbee contributors"]
+
+[workspace.dependencies]
+rszigbee-spec = { path = "crates/rszigbee-spec", version = "0.0.1" }
+rszigbee-adapter = { path = "crates/rszigbee-adapter", version = "0.0.1" }
+rszigbee-core = { path = "crates/rszigbee-core", version = "0.0.1" }
+
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tokio = { version = "1", default-features = false }
+serde = { version = "1", default-features = false }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+unused_qualifications = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# The parse-path invariant from the Phase 0 report, section 43: a malformed
+# frame from the radio must never take the process down. These four lints are
+# what enforce it; `clippy.toml` relaxes them inside tests, where asserting on
+# `decode(..).unwrap()` is how the invariant gets checked.
+indexing_slicing = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# Deliberately NOT enabled: `arithmetic_side_effects`. It fires on provably
+# bounded arithmetic inside match arms (`0x08..=0x0f => Data(id - 0x08 + 1)`),
+# and satisfying it there means writing `saturating_sub`/`saturating_add` around
+# expressions that cannot overflow — worse code for no gain. Overflow safety in
+# release builds is covered by the profile setting below plus fuzzing.
+
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+# Arithmetic overflow is a bug in a protocol decoder, not a wrapping operation
+# to be relied on. Keep the debug behaviour in release too: a panic here is
+# loud and reportable, a silent wrap corrupts a device's state invisibly.
+[profile.release]
+overflow-checks = true

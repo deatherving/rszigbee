@@ -1,0 +1,25 @@
+[package]
+name = "rszigbee-spec"
+description = "Zigbee specification-derived types, data and codecs: ZCL, ZDO, data types, manufacturer codes. Sans-IO."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["zigbee", "zcl", "zdo", "protocol"]
+categories = ["network-programming", "no-std"]
+
+# Sans-IO by construction: no tokio, no serial, no I/O of any kind.
+# See the Phase 0 report, section 21 (dependency rules).
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true, optional = true, features = ["derive", "alloc"] }
+
+[features]
+default = ["std"]
+std = ["thiserror/std"]
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

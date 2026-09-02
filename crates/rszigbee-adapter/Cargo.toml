@@ -1,0 +1,23 @@
+[package]
+name = "rszigbee-adapter"
+description = "The rszigbee coordinator adapter trait, shared transport types, and a mock adapter."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["zigbee", "coordinator", "adapter"]
+categories = ["network-programming"]
+
+[dependencies]
+rszigbee-spec.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

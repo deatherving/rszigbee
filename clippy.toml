@@ -1,0 +1,8 @@
+# The parse-path lints (unwrap/expect/panic/indexing) exist to guarantee that a
+# malformed radio frame cannot take the process down. That guarantee is about
+# library code; a test asserting `decode(..).unwrap() == expected` is exactly
+# how the guarantee is checked, so the lints are relaxed inside tests only.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

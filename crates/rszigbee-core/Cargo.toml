@@ -1,0 +1,26 @@
+[package]
+name = "rszigbee-core"
+description = "The rszigbee runtime: device model, events, commands, reachability, persistence traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["zigbee", "runtime"]
+categories = ["network-programming"]
+
+# NOTE: rszigbee-core must never depend on rszigbee-mqtt, on an MQTT client, or
+# on serde_json for internal paths. CI asserts this (Phase 0 report, section 21).
+[dependencies]
+rszigbee-spec.workspace = true
+rszigbee-adapter.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

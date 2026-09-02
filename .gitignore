@@ -1,0 +1,6 @@
+# Unanchored so nested crate target dirs (spikes/*/target) are covered too.
+target/
+
+# Design docs and ADRs are kept out of the public repository; the reasoning the
+# code depends on is consolidated into README.md.
+/docs
