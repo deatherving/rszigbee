@@ -9,13 +9,13 @@ Upstream definitions read: **4473**.
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| complete | 939 | 21.0% | fully expressed as data |
-| approximate | 824 | 18.4% | works, with something named not expressed |
-| needs-primitive | 1623 | 36.3% | blocked only on named shared helpers |
-| needs-rust | 990 | 22.1% | blocked on per-device code |
+| complete | 1167 | 26.1% | fully expressed as data |
+| approximate | 942 | 21.1% | works, with something named not expressed |
+| needs-primitive | 1252 | 28.0% | blocked only on named shared helpers |
+| needs-rust | 1015 | 22.7% | blocked on per-device code |
 | unsupported | 97 | 2.2% | upstream's own deprecated path |
 
-**Usable today: 1763 / 4473 = 39.4%.**
+**Usable today: 2109 / 4473 = 47.1%.**
 
 `complete` and `approximate` are reported separately and never merged. An
 approximation is a device that works with something missing — a Hue bulb whose
@@ -30,38 +30,38 @@ that mentions it, which is the eventual reach.
 
 | primitive | kind | sole | total |
 |---|---|---:|---:|
-| `m.forcePowerSource` | primitive | 26 | 86 |
-| `m.windowCovering` | primitive | 22 | 45 |
-| `lockExtend` | primitive | 22 | 26 |
-| `tuya.modernExtend.tuyaBase` | primitive | 19 | 622 |
-| `fz.ias_occupancy_alarm_1` | primitive | 15 | 56 |
-| `m.deviceAddCustomCluster` | primitive | 14 | 146 |
-| `m.commandsOnOff` | primitive | 13 | 119 |
-| `fz.ias_contact_alarm_1` | primitive | 12 | 71 |
-| `extend:non-call` | rust | 12 | 19 |
-| `philips.m.onOff` | primitive | 10 | 10 |
-| `configure:imperative` | rust | 9 | 179 |
-| `sunricher.extend.externalSwitchType` | primitive | 9 | 19 |
-| `fz.linkquality_from_basic` | primitive | 9 | 16 |
-| `fz.ias_water_leak_alarm_1` | primitive | 8 | 36 |
+| `m.deviceAddCustomCluster` | primitive | 22 | 146 |
+| `extend:non-call` | rust | 14 | 19 |
+| `m.commandsLevelCtrl` | primitive | 12 | 81 |
+| `fz.ias_occupancy_alarm_1_with_timeout` | primitive | 12 | 13 |
+| `fromZigbee:local` | rust | 11 | 704 |
+| `sunricher.extend.externalSwitchType` | primitive | 11 | 19 |
+| `toZigbee:local` | rust | 10 | 458 |
+| `configure:imperative` | rust | 10 | 103 |
+| `tz.on_off` | primitive | 9 | 200 |
+| `configure:not-a-function` | rust | 9 | 45 |
+| `fz.ias_occupancy_alarm_2` | primitive | 8 | 11 |
 | `m.iasWarning` | primitive | 8 | 10 |
 | `m.skipDefaultResponse` | primitive | 8 | 10 |
-| `fz.battery` | primitive | 7 | 460 |
-| `toZigbee:local` | rust | 7 | 458 |
-| `ledvanceOnOff` | primitive | 7 | 10 |
+| `configure:bind-clusters-not-literal` | rust | 7 | 102 |
+| `e.smoke` | primitive | 6 | 29 |
+| `e.gas` | primitive | 6 | 24 |
 | `m.thermostat` | primitive | 6 | 15 |
-| `fromZigbee:local` | rust | 5 | 704 |
+| `m.numeric:non-literal-args` | rust | 5 | 114 |
+| `m.enumLookup:non-literal-args` | rust | 5 | 77 |
 | `m.pressure` | primitive | 5 | 26 |
+| `m.commandsWindowCovering` | primitive | 5 | 24 |
 | `sunricher.extend.minimumPWM` | primitive | 5 | 14 |
+| `configure:device.getEndpoint(1).saveClusterAttributeKeyValue` | primitive | 5 | 9 |
+| `tuya.valueConverterBasic.lookup({none: tuya.enum(0), low: tuya.enum(1), high: tuya.enum(2)})` | primitive | 5 | 8 |
 | `gledoptoConfigureReadModelID` | primitive | 5 | 5 |
 | `m.lock` | primitive | 5 | 5 |
-| `m.numeric:non-literal-args` | rust | 4 | 114 |
-| `fz.ias_occupancy_alarm_1_with_timeout` | primitive | 4 | 13 |
+| `tuya.exposes.switch` | primitive | 4 | 38 |
+| `fz.ias_contact_alarm_1_report` | primitive | 4 | 11 |
+| `tuya.modernExtend.electricityMeasurementPoll` | primitive | 4 | 11 |
 | `m.deviceTemperature` | primitive | 4 | 9 |
-| `spread:nodonPilotWire` | primitive | 4 | 5 |
-| `pushokExtend.pulseCounter` | primitive | 4 | 4 |
 
-Distinct missing primitives: **2173**, so the tail is long and the
+Distinct missing primitives: **2194**, so the tail is long and the
 top of this table is where the leverage is.
 
 ## What this number is not

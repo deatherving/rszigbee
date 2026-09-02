@@ -38,6 +38,15 @@ pub fn clusters() -> Vec<ClusterDef> {
         gen_basic(),
         gen_power_cfg(),
         gen_identify(),
+        closures_door_lock(),
+        closures_window_covering(),
+        ms_illuminance(),
+        ms_occupancy(),
+        ms_soil_moisture(),
+        ms_co2(),
+        ss_ias_zone(),
+        se_metering(),
+        ha_electrical_measurement(),
         gen_on_off(),
         gen_level_ctrl(),
         ms_temperature(),
@@ -150,6 +159,93 @@ fn ms_humidity() -> ClusterDef {
         .attr(0x0001, "minMeasuredValue", U16)
         .attr(0x0002, "maxMeasuredValue", U16)
         .attr(0x0003, "tolerance", U16)
+}
+
+/// `closuresDoorLock`. `lockState`: 0 not fully locked, 1 locked, 2 unlocked.
+fn closures_door_lock() -> ClusterDef {
+    ClusterDef::new(0x0101, "closuresDoorLock")
+        .attr(0x0000, "lockState", ENUM8)
+        .attr(0x0001, "lockType", ENUM8)
+        .attr(0x0002, "actuatorEnabled", BOOL)
+        .cmd(0x00, "lockDoor", &[])
+        .cmd(0x01, "unlockDoor", &[])
+        .cmd(0x02, "toggleDoor", &[])
+}
+
+/// `closuresWindowCovering`.
+///
+/// The percentage attributes are "percentage closed", not open, which is the
+/// opposite of what a caller means by a position.
+fn closures_window_covering() -> ClusterDef {
+    ClusterDef::new(0x0102, "closuresWindowCovering")
+        .attr(0x0007, "configStatus", MAP8)
+        .attr(0x0008, "currentPositionLiftPercentage", U8)
+        .attr(0x0009, "currentPositionTiltPercentage", U8)
+        .cmd(0x00, "upOpen", &[])
+        .cmd(0x01, "downClose", &[])
+        .cmd(0x02, "stop", &[])
+        .cmd(0x05, "goToLiftPercentage", &[("percentageliftvalue", U8)])
+        .cmd(0x08, "goToTiltPercentage", &[("percentagetiltvalue", U8)])
+}
+
+/// `msIlluminanceMeasurement`.
+fn ms_illuminance() -> ClusterDef {
+    ClusterDef::new(0x0400, "msIlluminanceMeasurement")
+        .attr(0x0000, "measuredValue", U16)
+        .attr(0x0001, "minMeasuredValue", U16)
+        .attr(0x0002, "maxMeasuredValue", U16)
+}
+
+/// `msOccupancySensing`. `occupancy` is a bitmap whose bit 0 is occupied.
+fn ms_occupancy() -> ClusterDef {
+    ClusterDef::new(0x0406, "msOccupancySensing")
+        .attr(0x0000, "occupancy", MAP8)
+        .attr(0x0001, "occupancySensorType", ENUM8)
+}
+
+/// `msSoilMoisture`. Not in the built-in set before, which is why a plan step
+/// has to carry its own wire type.
+fn ms_soil_moisture() -> ClusterDef {
+    ClusterDef::new(0x0408, "msSoilMoisture")
+        .attr(0x0000, "measuredValue", U16)
+        .attr(0x0001, "minMeasuredValue", U16)
+        .attr(0x0002, "maxMeasuredValue", U16)
+}
+
+/// `msCO2`. The measured value is a fraction of one, not parts per million.
+fn ms_co2() -> ClusterDef {
+    ClusterDef::new(0x040d, "msCO2").attr(0x0000, "measuredValue", ZclType::Single)
+}
+
+/// `ssIasZone`. `zoneStatus` packs alarm, tamper and battery-low into bits.
+fn ss_ias_zone() -> ClusterDef {
+    ClusterDef::new(0x0500, "ssIasZone")
+        .attr(0x0000, "zoneState", ENUM8)
+        .attr(0x0001, "zoneType", ZclType::Enum16)
+        .attr(0x0002, "zoneStatus", ZclType::Bitmap(2))
+        .attr(0x0010, "iasCieAddr", IEEE)
+        .attr(0x0011, "zoneId", U8)
+}
+
+/// `seMetering`. The multiplier and divisor are what make the summation mean
+/// anything, and reading them is part of interviewing a meter.
+fn se_metering() -> ClusterDef {
+    ClusterDef::new(0x0702, "seMetering")
+        .attr(0x0000, "currentSummDelivered", U48)
+        .attr(0x0200, "status", MAP8)
+        .attr(0x0301, "multiplier", U24)
+        .attr(0x0302, "divisor", U24)
+        .attr(0x0400, "instantaneousDemand", ZclType::Int(3))
+}
+
+/// `haElectricalMeasurement`.
+fn ha_electrical_measurement() -> ClusterDef {
+    ClusterDef::new(0x0b04, "haElectricalMeasurement")
+        .attr(0x0505, "rmsVoltage", U16)
+        .attr(0x0508, "rmsCurrent", U16)
+        .attr(0x050b, "activePower", I16)
+        .attr(0x0604, "acPowerMultiplier", U16)
+        .attr(0x0605, "acPowerDivisor", U16)
 }
 
 // Kept so the constants above are all exercised once the metering clusters

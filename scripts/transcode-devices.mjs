@@ -48,6 +48,71 @@ const KNOWN_EXTENDS = new Map([
   ['m.numeric', 'Numeric'],
   ['m.binary', 'Binary'],
   ['m.enumLookup', 'EnumLookup'],
+  ['m.windowCovering', 'WindowCovering'],
+  ['m.commandsOnOff', 'CommandsOnOff'],
+  ['m.forcePowerSource', 'ForcePowerSource'],
+  ['tuya.modernExtend.tuyaBase', 'TuyaBase'],
+]);
+
+/**
+ * Vendor wrappers over a door lock.
+ *
+ * `lockExtend` (yale.ts:158) is lock state plus battery plus PIN and user
+ * management. The lock itself is expressible; the PIN and user parts are not,
+ * so this is an approximation for the same reason the light wrappers are: the
+ * door locks and unlocks, and managing codes does not work.
+ */
+const VENDOR_LOCK_WRAPPERS = new Set(['lockExtend']);
+
+/**
+ * Vendor wrappers over `m.onOff`.
+ *
+ * Verified the same way as the lights: `philips.ts:764` and `tuya.ts:4920` are
+ * `modernExtend.onOff(args)` with vendor extras layered on -- power-outage
+ * memory, indicator mode, child lock, backlight, switch type. The switch
+ * switches; the extras do not, so this is an approximation.
+ */
+const VENDOR_ONOFF_WRAPPERS = new Set([
+  'philips.m.onOff',
+  'ledvanceOnOff',
+  'tuyaOnOff',
+  'tuya.modernExtend.tuyaOnOff',
+]);
+
+/**
+ * `fromZigbee` converters that map onto an `Extend`.
+ *
+ * These are shared library converters, not per-device code, so recognising
+ * them is exactly the "implement one primitive, unlock N devices" case. The
+ * IAS ones are the same cluster with different alarm names.
+ */
+const KNOWN_FZ = new Map([
+  ['fz.ias_occupancy_alarm_1', {helper: 'IasZoneAlarm', args: {alarms: ['occupancy', 'tamper', 'battery_low']}}],
+  ['fz.ias_contact_alarm_1', {helper: 'IasZoneAlarm', args: {alarms: ['contact', 'tamper', 'battery_low']}}],
+  ['fz.ias_water_leak_alarm_1', {helper: 'IasZoneAlarm', args: {alarms: ['water_leak', 'tamper', 'battery_low']}}],
+  ['fz.ias_smoke_alarm_1', {helper: 'IasZoneAlarm', args: {alarms: ['smoke', 'tamper', 'battery_low']}}],
+  ['fz.ias_gas_alarm_1', {helper: 'IasZoneAlarm', args: {alarms: ['gas', 'tamper', 'battery_low']}}],
+  ['fz.temperature', {helper: 'Temperature', args: {}}],
+  ['fz.humidity', {helper: 'Humidity', args: {}}],
+  ['fz.illuminance', {helper: 'Illuminance', args: {}}],
+  ['fz.occupancy', {helper: 'Occupancy', args: {}}],
+  ['fz.battery', {helper: 'Battery', args: {}}],
+  ['fz.on_off', {helper: 'OnOff', args: {}}],
+]);
+
+/**
+ * Converters the runtime already satisfies without a definition saying so.
+ *
+ * `linkquality_from_basic` reads the link quality out of any incoming frame,
+ * and rszigbee carries it on every `ZclRx` already. Recognising it as
+ * unnecessary is honest; reporting it as missing would rank a primitive that
+ * needs no work.
+ */
+const SATISFIED_FZ = new Set([
+  'fz.linkquality_from_basic',
+  'fz.ignore_basic_report',
+  'fz.ignore_genOta',
+  'fz.ignore_time_read',
 ]);
 
 /**
@@ -113,6 +178,53 @@ const KNOWN_REPORTING = new Set([
   'reporting.rmsVoltage', 'reporting.rmsCurrent', 'reporting.currentSummDelivered',
   'reporting.brightness', 'reporting.deviceTemperature',
 ]);
+
+
+/**
+ * Cluster names to ids.
+ *
+ * Upstream's `reporting.bind` names clusters rather than numbering them, so a
+ * binding cannot be transcoded without this. Ids are from the ZCL
+ * specification; a Rust test checks every one against the cluster registry, so
+ * a wrong number here fails the build rather than producing a binding to the
+ * wrong cluster.
+ *
+ * Vendor-specific names are deliberately absent: they resolve to different ids
+ * per manufacturer, and guessing one would bind to whatever happens to live
+ * there. They are reported as missing primitives instead.
+ */
+const CLUSTER_IDS = new Map([
+  ['genBasic', 0x0000], ['genPowerCfg', 0x0001], ['genIdentify', 0x0003],
+  ['genGroups', 0x0004], ['genScenes', 0x0005], ['genOnOff', 0x0006],
+  ['genLevelCtrl', 0x0008], ['genBinaryInput', 0x000f], ['genOta', 0x0019],
+  ['genPollCtrl', 0x0020], ['genTime', 0x000a],
+  ['closuresDoorLock', 0x0101], ['closuresWindowCovering', 0x0102],
+  ['hvacThermostat', 0x0201], ['hvacFanCtrl', 0x0202],
+  ['hvacUserInterfaceCfg', 0x0204],
+  ['lightingColorCtrl', 0x0300], ['lightingBallastCfg', 0x0301],
+  ['msIlluminanceMeasurement', 0x0400], ['msTemperatureMeasurement', 0x0402],
+  ['msPressureMeasurement', 0x0403], ['msRelativeHumidity', 0x0405],
+  ['msOccupancySensing', 0x0406], ['msSoilMoisture', 0x0408], ['msCO2', 0x040d],
+  ['ssIasZone', 0x0500], ['ssIasWd', 0x0502],
+  ['seMetering', 0x0702], ['haElectricalMeasurement', 0x0b04],
+  ['haDiagnostic', 0x0b05],
+]);
+
+/**
+ * Calls inside `configure` that need no binding of their own.
+ *
+ * `reporting.X(endpoint)` configures reporting for an attribute the capability
+ * sources already cover, and `endpoint.read` is an interview-time read. Both
+ * are recognised so they do not make an otherwise transcodable body look
+ * imperative.
+ */
+const CONFIGURE_IGNORABLE = [
+  /^reporting\./, /^endpoint\.read$/, /^endpoint\.write$/,
+  /^device\.(save|getEndpoint|powerSource)$/,
+  /^tuya\.configureMagicPacket$/,
+  /^endpoint\.saveClusterAttributeKeyValue$/,
+  /^m\./, /^utils\.assertEndpoint$/,
+];
 
 // ---------------------------------------------------------------------------
 // Small AST helpers
@@ -197,7 +309,11 @@ function literal(node) {
 /** The dotted name of a call's callee, e.g. `m.temperature`. */
 function calleeName(node) {
   if (!ts.isCallExpression(node)) return undefined;
-  return node.expression.getText();
+  // Whitespace collapsed, because upstream formats long fluent chains across
+  // lines: `e\n    .numeric(...)`. Left raw, the name carries a newline and an
+  // indent and matches nothing -- which silently blocked 305 definitions on a
+  // primitive that was already implemented.
+  return node.expression.getText().replace(/\s+/g, '');
 }
 
 /** Walks a fluent chain back to its root call, collecting `.withX(...)` steps. */
@@ -283,6 +399,23 @@ function transcodeExtend(def) {
     const known = KNOWN_EXTENDS.get(name);
     const args = ts.isCallExpression(el) ? el.arguments.map(literal) : [];
     const nonLiteral = args.some((a) => a === NOT_LITERAL);
+    if (!known && VENDOR_ONOFF_WRAPPERS.has(name)) {
+      out.push({helper: 'OnOff', args: {}});
+      approximations.push({
+        primitive: name,
+        why: 'vendor on/off wrapper: switching works, vendor extras are not expressed',
+      });
+      continue;
+    }
+    if (!known && VENDOR_LOCK_WRAPPERS.has(name)) {
+      out.push({helper: 'Lock', args: {}});
+      out.push({helper: 'Battery', args: {}});
+      approximations.push({
+        primitive: name,
+        why: 'vendor lock wrapper: locking works, PIN and user management are not expressed',
+      });
+      continue;
+    }
     if (!known && VENDOR_LIGHT_WRAPPERS.has(name)) {
       out.push({helper: 'Light', args: nonLiteral ? {} : (args[0] ?? {})});
       approximations.push({primitive: name, why: 'vendor light wrapper: the light works, vendor-specific effects are not expressed'});
@@ -402,39 +535,140 @@ function transcodeConfigure(def) {
     missing.push({primitive: 'configure:not-a-function', kind: 'rust'});
     return {value: [], missing};
   }
-  const text = cfg.getText();
-  // Control flow means it is a procedure, not a table.
-  if (/\b(if|for|while|switch|try)\b|\?\?|\?\.|&&|\|\|/.test(text)) {
-    missing.push({primitive: 'configure:imperative', kind: 'rust'});
-    return {value: [], missing};
-  }
 
   const bindings = [];
-  let blocked = false;
+  // Local names bound to an endpoint number, e.g.
+  // `const endpoint = device.getEndpoint(1)`.
+  const endpointVars = new Map();
+  // Loop variables bound to a literal, while unrolling.
+  const loopVars = new Map();
+  let blocked = null;
+
+  /** Resolves an expression to an endpoint number, or undefined. */
+  const endpointOf = (node) => {
+    if (!node) return undefined;
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (ts.isIdentifier(node)) {
+      const name = node.text;
+      if (loopVars.has(name)) return loopVars.get(name);
+      if (endpointVars.has(name)) return endpointVars.get(name);
+      return undefined;
+    }
+    if (ts.isCallExpression(node) && /^device\.getEndpoint$/.test(node.expression.getText())) {
+      return endpointOf(node.arguments[0]);
+    }
+    return undefined;
+  };
+
+  /** Records the bindings one `reporting.bind(...)` call asks for. */
+  const takeBind = (call) => {
+    const endpoint = endpointOf(call.arguments[0]);
+    if (endpoint === undefined) {
+      blocked = 'configure:bind-endpoint-not-literal';
+      return;
+    }
+    const names = literal(call.arguments[2]);
+    if (names === NOT_LITERAL || !Array.isArray(names)) {
+      blocked = 'configure:bind-clusters-not-literal';
+      return;
+    }
+    for (const name of names) {
+      const id = CLUSTER_IDS.get(name);
+      if (id === undefined) {
+        // A vendor cluster whose id differs per manufacturer. Reported by
+        // name, so it ranks like any other missing primitive.
+        missing.push({primitive: `cluster:${name}`, kind: 'primitive'});
+        continue;
+      }
+      bindings.push({endpoint, cluster: id, reporting: []});
+    }
+  };
+
   const visit = (node) => {
     if (blocked) return;
-    if (ts.isCallExpression(node)) {
-      const name = node.expression.getText();
-      const isDeviceCall = /^device\.(getEndpoint|save|powerSource)/.test(name)
-        || /^endpoint\.(read|write|configureReporting|saveClusterAttributeKeyValue|bind)/.test(name)
-        || /^utils\./.test(name);
-      if (name.startsWith('reporting.')) {
-        if (!KNOWN_REPORTING.has(name)) {
-          missing.push({primitive: name, kind: 'primitive'});
-          blocked = true;
+
+    // `const endpoint = device.getEndpoint(1)`
+    if (ts.isVariableStatement(node)) {
+      for (const decl of node.declarationList.declarations) {
+        const value = endpointOf(decl.initializer);
+        if (value !== undefined && ts.isIdentifier(decl.name)) {
+          endpointVars.set(decl.name.text, value);
+        } else if (decl.initializer && !ts.isIdentifier(decl.name)) {
+          blocked = 'configure:destructuring';
           return;
         }
-        bindings.push({helper: name.slice('reporting.'.length)});
-      } else if (!isDeviceCall && !/^(m|tuya)\./.test(name) && name !== '') {
-        missing.push({primitive: `configure:${name}`, kind: 'primitive'});
-        blocked = true;
+      }
+      return;
+    }
+
+    // `for (const ep of [1, 2, 3]) { ... }` -- a table written as a loop.
+    // Unrolled rather than refused: every one of these in the catalogue binds
+    // fixed clusters on a literal list of endpoints.
+    if (ts.isForOfStatement(node)) {
+      const items = literal(node.expression);
+      if (items === NOT_LITERAL || !Array.isArray(items)) {
+        blocked = 'configure:loop-not-literal';
         return;
+      }
+      const decl = node.initializer;
+      if (!ts.isVariableDeclarationList(decl) || decl.declarations.length !== 1) {
+        blocked = 'configure:loop-shape';
+        return;
+      }
+      const name = decl.declarations[0].name;
+      if (!ts.isIdentifier(name)) {
+        blocked = 'configure:loop-shape';
+        return;
+      }
+      for (const item of items) {
+        if (typeof item !== 'number') {
+          blocked = 'configure:loop-not-endpoints';
+          return;
+        }
+        loopVars.set(name.text, item);
+        ts.forEachChild(node.statement, visit);
+        if (blocked) return;
+      }
+      loopVars.delete(name.text);
+      return;
+    }
+
+    if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isForStatement(node)
+        || ts.isSwitchStatement(node) || ts.isTryStatement(node)
+        || ts.isConditionalExpression(node)) {
+      blocked = 'configure:imperative';
+      return;
+    }
+
+    if (ts.isCallExpression(node)) {
+      const name = node.expression.getText().replace(/\s+/g, '');
+      if (/^reporting\.bind$/.test(name)) {
+        takeBind(node);
+        return;
+      }
+      if (!CONFIGURE_IGNORABLE.some((re) => re.test(name))) {
+        missing.push({primitive: `configure:${name}`, kind: 'primitive'});
+        blocked = null;
       }
     }
     ts.forEachChild(node, visit);
   };
+
   visit(cfg.body);
-  return {value: blocked ? [] : bindings, missing};
+
+  if (blocked) {
+    missing.push({primitive: blocked, kind: 'rust'});
+    return {value: [], missing};
+  }
+  // Deduplicated: the same endpoint and cluster bound twice is one binding.
+  const seen = new Set();
+  const unique = bindings.filter((b) => {
+    const key = `${b.endpoint}:${b.cluster}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return {value: unique, missing};
 }
 
 // ---------------------------------------------------------------------------
@@ -473,12 +707,25 @@ function transcode(def, file, line) {
   for (const key of ['fromZigbee', 'toZigbee']) {
     const node = prop(def, key);
     if (!node || !ts.isArrayLiteralExpression(node)) continue;
+    let unresolved = 0;
     for (const el of node.elements) {
-      const name = el.getText();
-      if (/^(fz|tz)\./.test(name)) missing.push({primitive: name, kind: 'primitive'});
-      else missing.push({primitive: `${key}:local`, kind: 'rust', detail: name.slice(0, 40)});
+      const name = el.getText().replace(/\s+/g, '');
+      const mapped = KNOWN_FZ.get(name);
+      if (mapped) {
+        extend.push(mapped);
+        continue;
+      }
+      if (SATISFIED_FZ.has(name)) {
+        continue;
+      }
+      if (/^(fz|tz)\./.test(name)) {
+        missing.push({primitive: name, kind: 'primitive'});
+      } else {
+        missing.push({primitive: `${key}:local`, kind: 'rust', detail: name.slice(0, 40)});
+      }
+      unresolved += 1;
     }
-    sections[key] = false;
+    sections[key] = unresolved === 0;
   }
 
   const keys = propNames(def);
@@ -712,6 +959,10 @@ fs.writeFileSync(
   JSON.stringify({
     extends: [...new Set(KNOWN_EXTENDS.values())].sort(),
     tuyaConverterKinds: [...new Set([...KNOWN_TUYA_CONVERTERS.values()].map((v) => v.kind))].sort(),
+    // Cluster ids this transcoder resolves names to. A wrong number here
+    // produces a binding to whatever cluster happens to live at it, so the
+    // Rust side checks every one against the cluster registry.
+    clusters: Object.fromEntries([...CLUSTER_IDS].sort((a, b) => a[1] - b[1])),
   }, null, 1),
 );
 console.log('wrote COVERAGE.md and claimed-primitives.json');

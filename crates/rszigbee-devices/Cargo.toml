@@ -36,6 +36,7 @@ serde = ["dep:serde", "rszigbee-spec/serde"]
 [dev-dependencies]
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = "1"
+rszigbee-spec = { workspace = true, features = ["serde"] }
 
 [[test]]
 name = "upstream_differential"

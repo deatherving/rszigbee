@@ -53,8 +53,8 @@ mod index;
 mod matcher;
 
 pub use definition::{
-    Access, Binding, Definition, Extend, NumericSpec, Reporting, TuyaDatapoint, TuyaKind,
-    WhiteLabel,
+    Access, Binding, Definition, Extend, NumericSpec, PowerSourceHint, Reporting, TuyaDatapoint,
+    TuyaKind, WhiteLabel,
 };
 pub use index::{DefinitionIndex, IndexError};
 

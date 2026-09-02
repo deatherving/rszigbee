@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use rszigbee_devices::{Definition, DefinitionIndex};
+use rszigbee_devices::{Definition, DefinitionIndex, Extend, PowerSourceHint};
 use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee, Nwk};
 use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zcl::registry::ClusterRegistry;
@@ -39,7 +39,7 @@ use super::{
 use super::{decode, definitions, encode};
 use crate::adapter::{AdapterError, AdapterEvent, CoordinatorAdapter, StartOutcome};
 use crate::command::{CommandError, CommandOutcome, Confirmation, DeviceCommand};
-use crate::device::InterviewState;
+use crate::device::{InterviewState, PowerSource};
 use crate::event::{Event, LastSeenReason, LeaveReason};
 use crate::reachability::{
     Evidence, NextCheck, ProbeResult, ReachabilityContext, ReachabilityPolicy,
@@ -729,8 +729,17 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                 // The sensor path's last link: an attribute report becomes
                 // typed capability state, so a caller sees `temperature: 21.37`
                 // and not a cluster id and an integer.
-                if let crate::event::ZclMessageKind::Attributes(attributes) = &message.kind {
-                    self.publish_state(ieee, rx.endpoint, rx.cluster, attributes);
+                match &message.kind {
+                    crate::event::ZclMessageKind::Attributes(attributes) => {
+                        self.publish_state(ieee, rx.endpoint, rx.cluster, attributes);
+                    }
+                    // A button press. Emitted as an action, never folded into
+                    // state: it is momentary, and a state object that carries
+                    // it has to have it excluded again on the way out.
+                    crate::event::ZclMessageKind::Command { id, .. } => {
+                        self.publish_action(ieee, rx.endpoint, rx.cluster, *id);
+                    }
+                    crate::event::ZclMessageKind::DefaultResponse { .. } => {}
                 }
                 self.emit(Event::ZclMessage(message));
             }
@@ -944,6 +953,71 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             ieee,
             endpoint: multi.then_some(endpoint),
             changes,
+        });
+    }
+
+    /// Applies definition metadata that overrides what the device reported.
+    ///
+    /// Currently one thing, and it matters: `forcePowerSource` exists because
+    /// 26 upstream devices lie about how they are powered. A mains device that
+    /// misreports as battery is never probed, so it is never noticed to have
+    /// died; a battery device that misreports as mains is probed until its
+    /// battery is flat. Both come from the same wrong byte.
+    async fn apply_definition_metadata(&mut self, ieee: Ieee) {
+        let forced = self.resolve(ieee).and_then(|d| {
+            d.extend.iter().find_map(|e| match e {
+                Extend::ForcePowerSource { source } => Some(*source),
+                _ => None,
+            })
+        });
+        let Some(source) = forced else {
+            return;
+        };
+
+        let (power, sleepy) = match source {
+            PowerSourceHint::Mains => (PowerSource::Mains, false),
+            PowerSourceHint::Dc => (PowerSource::Dc, false),
+            PowerSourceHint::Battery => (PowerSource::Battery, true),
+            // `PowerSourceHint` is `#[non_exhaustive]`, so a newer devices
+            // crate can name a source this build does not know. Leaving the
+            // reported value alone is the safe answer: overriding it with a
+            // guess is how a device stops being probed.
+            _ => return,
+        };
+        if let Some(entry) = self.devices.get_mut(ieee) {
+            if entry.info.power_source == power {
+                return;
+            }
+            debug!(
+                %ieee,
+                reported = ?entry.info.power_source,
+                forced = ?power,
+                "definition overrides the reported power source"
+            );
+            entry.info.power_source = power;
+            entry.reachability.is_sleepy = sleepy;
+        }
+        self.persist(ieee).await;
+    }
+
+    /// Emits an action for a received cluster command, if one is named.
+    fn publish_action(&mut self, ieee: Ieee, endpoint: EndpointId, cluster: ClusterId, id: u8) {
+        let Some(definition) = self.resolve(ieee) else {
+            return;
+        };
+        let Some((capability, action)) = definitions::command_to_action(definition, cluster, id)
+        else {
+            return;
+        };
+        let multi = self
+            .devices
+            .get(ieee)
+            .is_some_and(|e| e.info.endpoints.len() > 1);
+        self.emit(Event::Action {
+            ieee,
+            endpoint: multi.then_some(endpoint),
+            capability,
+            action,
         });
     }
 
@@ -1202,6 +1276,10 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                     model: resolved.map(|(model, _)| model),
                     source: crate::event::DefinitionSource::Bundled,
                 });
+
+                if matched {
+                    self.apply_definition_metadata(ieee).await;
+                }
 
                 // Resolving a definition is only half of making a sensor work.
                 // The other half is binding and configuring reporting, without

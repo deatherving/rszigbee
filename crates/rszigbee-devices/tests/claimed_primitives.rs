@@ -16,7 +16,10 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeMap;
+
 use rszigbee_devices::{Extend, NumericSpec, TuyaKind};
+use rszigbee_spec::zcl::registry::ClusterRegistry;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +29,9 @@ struct Claims {
     /// `TuyaKind` variant names it maps converters onto.
     #[serde(rename = "tuyaConverterKinds")]
     tuya_converter_kinds: Vec<String>,
+    /// Cluster names to the ids the transcoder resolves them to.
+    #[serde(default)]
+    clusters: BTreeMap<String, u16>,
 }
 
 /// Builds the named `Extend` variant, or `None` if this crate has no such one.
@@ -57,6 +63,24 @@ fn build(name: &str) -> Option<Extend> {
         "Co2" => Extend::Co2(NumericSpec::default()),
         "Occupancy" => Extend::Occupancy,
         "IasZoneAlarm" => Extend::IasZoneAlarm { alarms: Vec::new() },
+        "WindowCovering" => Extend::WindowCovering {
+            lift: true,
+            tilt: false,
+            inverted: false,
+        },
+        "Lock" => Extend::Lock,
+        "TuyaBase" => Extend::TuyaBase {
+            datapoints: true,
+            query_on_announce: false,
+            query_interval_secs: None,
+        },
+        "CommandsOnOff" => Extend::CommandsOnOff {
+            commands: Vec::new(),
+            endpoints: Vec::new(),
+        },
+        "ForcePowerSource" => Extend::ForcePowerSource {
+            source: rszigbee_devices::PowerSourceHint::Mains,
+        },
         "Numeric" => Extend::Numeric {
             name: "x".into(),
             cluster: rszigbee_devices::reexport::ClusterId(0x0402),
@@ -124,6 +148,43 @@ fn every_primitive_the_transcoder_claims_actually_exists() {
          Either add the variant or remove the claim — leaving it inflates the \
          coverage number without making any device work."
     );
+}
+
+#[test]
+fn every_cluster_id_the_transcoder_uses_matches_the_registry() {
+    // A wrong id here does not fail loudly: it produces a binding to whatever
+    // cluster happens to live at that number, and the device then reports
+    // nothing while everything looks configured. The registry is the authority
+    // for the clusters it knows.
+    let claims: Claims = serde_json::from_str(include_str!("fixtures/claimed-primitives.json"))
+        .expect("claimed-primitives.json should parse");
+    assert!(
+        !claims.clusters.is_empty(),
+        "the transcoder resolves cluster names, so the map must be published"
+    );
+
+    let registry = ClusterRegistry::with_builtins();
+    let mut wrong = Vec::new();
+    let mut unchecked = 0;
+    for (name, id) in &claims.clusters {
+        match registry.get_by_name(None, name) {
+            Some(def) if def.id.0 == *id => {}
+            Some(def) => wrong.push(format!(
+                "{name}: transcoder says 0x{id:04x}, registry says 0x{:04x}",
+                def.id.0
+            )),
+            // The built-in registry is a hand-written subset, so it does not
+            // know every cluster a binding can name. Counted rather than
+            // treated as agreement.
+            None => unchecked += 1,
+        }
+    }
+    println!(
+        "cluster ids checked against the registry: {} of {}, {unchecked} unknown to it",
+        claims.clusters.len() - unchecked,
+        claims.clusters.len()
+    );
+    assert!(wrong.is_empty(), "cluster id disagreements: {wrong:?}");
 }
 
 #[test]

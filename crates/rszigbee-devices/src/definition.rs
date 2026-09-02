@@ -211,6 +211,64 @@ pub enum Extend {
         access: Access,
     },
 
+    /// A window covering: blind, shade or curtain motor.
+    ///
+    /// `inverted` matters more than it looks: some motors report 0 as fully
+    /// open and others as fully closed, and getting it wrong means every
+    /// position is reported and commanded backwards.
+    WindowCovering {
+        /// Whether the covering can be positioned.
+        lift: bool,
+        /// Whether its slats can be tilted.
+        tilt: bool,
+        /// Whether the device's percentage scale runs the other way.
+        inverted: bool,
+    },
+
+    /// A door lock.
+    ///
+    /// Lock state and locking; PIN and user management are separate concerns
+    /// that this does not cover.
+    Lock,
+
+    /// The device speaks Tuya's manufacturer-specific datapoint protocol.
+    ///
+    /// Not a capability: it is the transport those devices use *instead of*
+    /// standard clusters, and the capabilities come from
+    /// [`Definition::tuya_datapoints`]. It appears in 622 upstream definitions
+    /// and is what makes any of them work at all.
+    TuyaBase {
+        /// Whether datapoint reporting is wired up.
+        datapoints: bool,
+        /// Whether to query the device's state when it announces itself.
+        query_on_announce: bool,
+        /// How often to poll, when the device does not report on its own.
+        query_interval_secs: Option<u32>,
+    },
+
+    /// The device *sends* on/off commands, rather than having on/off.
+    ///
+    /// A remote or a wall switch: it emits commands and the coordinator
+    /// receives them. That makes it an [`Access::Report`]-only source of
+    /// actions, not something to be commanded — the distinction between a
+    /// button and a bulb.
+    CommandsOnOff {
+        /// Which commands to surface, e.g. `on`, `off`, `toggle`.
+        commands: Vec<String>,
+        /// Endpoint names, when the device has several buttons.
+        endpoints: Vec<EndpointId>,
+    },
+
+    /// Overrides what the device says its power source is.
+    ///
+    /// Pure metadata, and it decides whether the device is ever probed: a
+    /// mains device that misreports itself as battery is never checked, and a
+    /// battery device that misreports as mains is probed until it dies.
+    ForcePowerSource {
+        /// The truth about this device.
+        source: PowerSourceHint,
+    },
+
     /// Something the transcoder could not express as data.
     ///
     /// Kept rather than dropped, and deliberately not silent. A definition
@@ -224,6 +282,19 @@ pub enum Extend {
         /// What it would take, for whoever picks it up.
         note: String,
     },
+}
+
+/// What a device is actually powered by, when it misreports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum PowerSourceHint {
+    /// Mains.
+    Mains,
+    /// Battery.
+    Battery,
+    /// A DC supply.
+    Dc,
 }
 
 /// Whether a capability can be read, written, or asked for.

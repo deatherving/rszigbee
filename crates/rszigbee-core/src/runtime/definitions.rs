@@ -30,6 +30,10 @@ const ON_OFF: ClusterId = ClusterId(0x0006);
 const LEVEL: ClusterId = ClusterId(0x0008);
 /// `genIdentify`.
 const IDENTIFY: ClusterId = ClusterId(0x0003);
+/// `closuresWindowCovering`.
+const WINDOW_COVERING: ClusterId = ClusterId(0x0102);
+/// `closuresDoorLock`.
+const LOCK: ClusterId = ClusterId(0x0101);
 
 /// Where one capability's value comes from on the wire.
 ///
@@ -260,6 +264,25 @@ fn well_known(extend: &Extend) -> Option<Vec<Source>> {
             out
         }
         Extend::Occupancy => vec![boolean("occupancy", 0x0406, ZclType::Bitmap(1))],
+        Extend::WindowCovering { lift, tilt, .. } => {
+            let mut out = Vec::new();
+            if *lift {
+                out.push(numeric("position", 0x0102, 0x0008, ZclType::Uint(1), 1));
+            }
+            if *tilt {
+                out.push(numeric("tilt", 0x0102, 0x0009, ZclType::Uint(1), 1));
+            }
+            out
+        }
+        // `lockState`: 1 is locked, 2 unlocked. Reported as the boolean a
+        // caller wants rather than the raw enum.
+        Extend::Lock => vec![Source {
+            capability: "lock",
+            cluster: LOCK,
+            attribute: AttrId(0x0000),
+            ty: ZclType::Enum8,
+            value: ValueShape::Boolean { on: 1 },
+        }],
         Extend::OnOff { .. } => vec![boolean("state", 0x0006, ZclType::Bool)],
         Extend::Light { brightness, .. } => {
             let mut out = vec![boolean("state", 0x0006, ZclType::Bool)];
@@ -280,6 +303,48 @@ fn well_known(extend: &Extend) -> Option<Vec<Source>> {
 /// report, which is the hot path.
 fn leak(name: &str) -> &'static str {
     Box::leak(name.to_owned().into_boxed_str())
+}
+
+/// Names the action a received cluster command represents.
+///
+/// A remote or wall switch *sends* on/off rather than having on/off, so its
+/// frames arrive as cluster-specific commands rather than attribute reports.
+/// That is why this is separate from [`report_to_state`]: a button press is
+/// momentary and is not state, and folding it into state is what forces
+/// upstream to carry a hard-coded list of keys to exclude again afterwards.
+///
+/// Returns `None` when the definition does not say this device emits commands,
+/// or the command is not one it names.
+#[must_use]
+pub fn command_to_action(
+    definition: &Definition,
+    cluster: ClusterId,
+    command: u8,
+) -> Option<(CapabilityId, String)> {
+    let names = definition.extend.iter().find_map(|e| match e {
+        Extend::CommandsOnOff { commands, .. } => Some(commands),
+        _ => None,
+    })?;
+    if cluster != ON_OFF {
+        return None;
+    }
+    // `offWithEffect` is reported as `off`: from a user's point of view the
+    // button was the off button, and the effect is how it dimmed on the way.
+    let action = match command {
+        // 0x40 is `offWithEffect`, folded in with plain off: from a user's
+        // point of view the off button was pressed, and the effect is only how
+        // it faded on the way.
+        0x00 | 0x40 => "off",
+        0x01 => "on",
+        0x02 => "toggle",
+        _ => return None,
+    };
+    // Only actions the definition declares. A device that upstream says emits
+    // on and off should not suddenly report a toggle.
+    if !names.iter().any(|n| n == action) {
+        return None;
+    }
+    Some((CapabilityId::from("action"), action.to_owned()))
 }
 
 /// Converts a reported attribute into a capability value.
@@ -336,6 +401,41 @@ pub fn report_to_state(
         }
     };
     Some((CapabilityId::from(source.capability), state))
+}
+
+/// What a window covering supports.
+#[derive(Debug, Clone, Copy)]
+struct Cover {
+    lift: bool,
+    tilt: bool,
+    inverted: bool,
+}
+
+/// The covering controls a definition declares, if it is a covering at all.
+fn cover_controls(definition: &Definition) -> Option<Cover> {
+    definition.extend.iter().find_map(|e| match e {
+        Extend::WindowCovering {
+            lift,
+            tilt,
+            inverted,
+        } => Some(Cover {
+            lift: *lift,
+            tilt: *tilt,
+            inverted: *inverted,
+        }),
+        _ => None,
+    })
+}
+
+/// Converts a requested percentage to the device's scale.
+///
+/// ZCL's `goToLiftPercentage` takes "percentage closed", and a caller asking
+/// for a position means "percentage open" — so the value is flipped, and
+/// flipped back for a device that already reports the other way round. Getting
+/// this wrong closes a blind that was asked to open.
+fn cover_percent(open: u8, inverted: bool) -> u8 {
+    let closed = 100u8.saturating_sub(open.min(100));
+    if inverted { open.min(100) } else { closed }
 }
 
 /// Whether the definition says this device has on/off, and on which endpoints.
@@ -438,6 +538,66 @@ pub fn plan_command(
                 cluster: LEVEL,
                 command: CommandId(0x04),
                 payload,
+            })
+        }
+        DeviceCommand::Open | DeviceCommand::Close | DeviceCommand::Stop => {
+            let cover = cover_controls(definition)
+                .ok_or_else(|| CommandError::UnsupportedCapability("position".into()))?;
+            let _ = cover;
+            // up 0x00, down 0x01, stop 0x02. Deliberately not remapped when
+            // the device's percentage scale is inverted: `inverted` describes
+            // how it reports *positions*, and up is still up.
+            let id = match command {
+                DeviceCommand::Open => 0x00,
+                DeviceCommand::Close => 0x01,
+                _ => 0x02,
+            };
+            Ok(PlannedZcl {
+                endpoint: endpoint_for(definition, info, &[], WINDOW_COVERING),
+                cluster: WINDOW_COVERING,
+                command: CommandId(id),
+                payload: Vec::new(),
+            })
+        }
+        DeviceCommand::SetPosition(percent) => {
+            let cover = cover_controls(definition)
+                .ok_or_else(|| CommandError::UnsupportedCapability("position".into()))?;
+            if !cover.lift {
+                return Err(CommandError::UnsupportedCapability("position".into()));
+            }
+            Ok(PlannedZcl {
+                endpoint: endpoint_for(definition, info, &[], WINDOW_COVERING),
+                cluster: WINDOW_COVERING,
+                // goToLiftPercentage
+                command: CommandId(0x05),
+                payload: vec![cover_percent(percent.raw(), cover.inverted)],
+            })
+        }
+        DeviceCommand::SetTilt(percent) => {
+            let cover = cover_controls(definition)
+                .ok_or_else(|| CommandError::UnsupportedCapability("tilt".into()))?;
+            if !cover.tilt {
+                return Err(CommandError::UnsupportedCapability("tilt".into()));
+            }
+            Ok(PlannedZcl {
+                endpoint: endpoint_for(definition, info, &[], WINDOW_COVERING),
+                cluster: WINDOW_COVERING,
+                // goToTiltPercentage
+                command: CommandId(0x08),
+                payload: vec![cover_percent(percent.raw(), cover.inverted)],
+            })
+        }
+        DeviceCommand::Lock | DeviceCommand::Unlock => {
+            if !definition.extend.iter().any(|e| matches!(e, Extend::Lock)) {
+                return Err(CommandError::UnsupportedCapability("lock".into()));
+            }
+            // lockDoor 0x00, unlockDoor 0x01.
+            let id = u8::from(matches!(command, DeviceCommand::Unlock));
+            Ok(PlannedZcl {
+                endpoint: endpoint_for(definition, info, &[], LOCK),
+                cluster: LOCK,
+                command: CommandId(id),
+                payload: Vec::new(),
             })
         }
         DeviceCommand::Identify { duration } => {
@@ -672,10 +832,144 @@ mod tests {
         let error = plan_command(
             &light_definition(),
             &device(&[0x0006]),
+            &DeviceCommand::SetTargetTemperature(21.0),
+        )
+        .expect_err("thermostats are not mapped yet");
+        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+    }
+
+    #[test]
+    fn locking_a_light_is_refused_as_an_unsupported_capability() {
+        // Distinct from the case above: `Lock` *is* mapped now, so the right
+        // answer is "this device has no lock", not "rszigbee cannot do locks".
+        let error = plan_command(
+            &light_definition(),
+            &device(&[0x0006]),
             &DeviceCommand::Lock,
         )
-        .expect_err("Lock is not mapped yet");
-        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+        .expect_err("a bulb has no lock");
+        assert!(
+            matches!(error, CommandError::UnsupportedCapability(ref c) if c.as_str() == "lock"),
+            "{error:?}"
+        );
+    }
+
+    fn cover_definition(inverted: bool) -> Definition {
+        let mut d = Definition::new("cover");
+        d.match_rules.models = vec!["COVER".into()];
+        d.extend = vec![Extend::WindowCovering {
+            lift: true,
+            tilt: false,
+            inverted,
+        }];
+        d
+    }
+
+    #[test]
+    fn opening_a_cover_is_the_up_command() {
+        let planned = plan_command(
+            &cover_definition(false),
+            &device(&[0x0102]),
+            &DeviceCommand::Open,
+        )
+        .expect("a covering opens");
+        assert_eq!(planned.cluster, WINDOW_COVERING);
+        assert_eq!(planned.command, CommandId(0x00));
+        assert!(planned.payload.is_empty());
+    }
+
+    #[test]
+    fn a_position_is_sent_as_percentage_closed_not_percentage_open() {
+        // ZCL's goToLiftPercentage takes percentage *closed*, and a caller
+        // asking for a position means percentage open. Getting this backwards
+        // closes a blind that was asked to open.
+        let planned = plan_command(
+            &cover_definition(false),
+            &device(&[0x0102]),
+            &DeviceCommand::SetPosition(crate::command::Percent::new(30)),
+        )
+        .expect("a covering positions");
+        assert_eq!(planned.command, CommandId(0x05));
+        assert_eq!(planned.payload, vec![70], "30% open is 70% closed");
+    }
+
+    #[test]
+    fn an_inverted_cover_gets_the_value_the_other_way_round() {
+        let planned = plan_command(
+            &cover_definition(true),
+            &device(&[0x0102]),
+            &DeviceCommand::SetPosition(crate::command::Percent::new(30)),
+        )
+        .expect("a covering positions");
+        assert_eq!(
+            planned.payload,
+            vec![30],
+            "an inverted motor already counts the other way"
+        );
+    }
+
+    #[test]
+    fn tilting_a_cover_that_cannot_tilt_is_refused() {
+        let error = plan_command(
+            &cover_definition(false),
+            &device(&[0x0102]),
+            &DeviceCommand::SetTilt(crate::command::Percent::new(50)),
+        )
+        .expect_err("this covering declares lift only");
+        assert!(
+            matches!(error, CommandError::UnsupportedCapability(ref c) if c.as_str() == "tilt"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_lock_state_report_becomes_a_boolean() {
+        let mut definition = Definition::new("lock");
+        definition.match_rules.models = vec!["LOCK".into()];
+        definition.extend = vec![Extend::Lock];
+
+        // lockState 1 = locked, 2 = unlocked.
+        let (capability, value) =
+            report_to_state(&definition, LOCK, 0x0000, &ZclValue::Enum(1)).expect("modelled");
+        assert_eq!(capability.as_str(), "lock");
+        assert_eq!(value, StateValue::Bool(true));
+
+        let (_, unlocked) =
+            report_to_state(&definition, LOCK, 0x0000, &ZclValue::Enum(2)).expect("modelled");
+        assert_eq!(unlocked, StateValue::Bool(false));
+    }
+
+    #[test]
+    fn a_received_on_command_becomes_an_action_not_state() {
+        let mut definition = Definition::new("remote");
+        definition.match_rules.models = vec!["REMOTE".into()];
+        definition.extend = vec![Extend::CommandsOnOff {
+            commands: vec!["on".into(), "off".into()],
+            endpoints: Vec::new(),
+        }];
+
+        let (capability, action) =
+            command_to_action(&definition, ON_OFF, 0x01).expect("on is declared");
+        assert_eq!(capability.as_str(), "action");
+        assert_eq!(action, "on");
+
+        // `offWithEffect` is still the off button from a user's point of view.
+        assert_eq!(
+            command_to_action(&definition, ON_OFF, 0x40).map(|(_, a)| a),
+            Some("off".to_owned())
+        );
+
+        // Not declared, so not reported: upstream says this remote sends on
+        // and off, and inventing a toggle would surface an action that never
+        // happened.
+        assert!(command_to_action(&definition, ON_OFF, 0x02).is_none());
+    }
+
+    #[test]
+    fn a_bulb_does_not_turn_its_own_commands_into_actions() {
+        // A light *has* on/off; it does not *emit* it. Without this a bulb
+        // echoing a command back would look like a button press.
+        assert!(command_to_action(&light_definition(), ON_OFF, 0x01).is_none());
     }
 
     #[test]
