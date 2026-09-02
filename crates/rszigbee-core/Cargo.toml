@@ -11,16 +11,26 @@ keywords = ["zigbee", "runtime"]
 categories = ["network-programming"]
 
 # NOTE: rszigbee-core must never depend on rszigbee-mqtt, on an MQTT client, or
-# on serde_json for internal paths. CI asserts this (Phase 0 report, section 21).
+# on serde_json for internal paths. scripts/check-boundaries.sh asserts this.
 [dependencies]
 rszigbee-spec.workspace = true
 rszigbee-adapter.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+serde = { workspace = true, optional = true, features = ["derive", "std"] }
+serde_json = { version = "1", optional = true }
+
+[features]
+default = []
+# On-disk persistence. Pulls serde and serde_json, which is why it is a feature
+# and not a default: the boundary rule is that serialisation happens at system
+# edges, and a caller using only MemoryStore should not link a JSON parser.
+file-store = ["dep:serde", "dep:serde_json", "rszigbee-spec/serde", "tokio/fs", "tokio/io-util"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util", "fs"] }
+tempfile = "3"
 
 [lints]
 workspace = true

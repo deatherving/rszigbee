@@ -2,7 +2,7 @@
 //!
 //! This is the equivalent of zigbee-herdsman's `Buffalo`, with one difference
 //! that matters: **every read returns `Result`.** Radio frames are untrusted
-//! input (README, "The parse-path invariant"), so the invariant this module exists to
+//! input (the README design notes), so the invariant this module exists to
 //! enforce is that no malformed frame can panic the process — no slice
 //! indexing, no `unwrap`, no arithmetic that can overflow.
 //!

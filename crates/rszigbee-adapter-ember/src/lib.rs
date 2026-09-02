@@ -112,7 +112,7 @@ impl EmberAdapter {
 
     /// What forming produced, if this start formed a network.
     ///
-    /// **The caller must persist [`Formed::network_key`].** Losing it loses the
+    /// **The caller must persist [`form::Formed::network_key`].** Losing it loses the
     /// network: every device joined to it would have to be re-paired. Returns
     /// `None` when the network was resumed rather than formed, which is the
     /// normal case.

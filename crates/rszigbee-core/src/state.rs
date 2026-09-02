@@ -8,7 +8,7 @@ use crate::capability::CapabilityId;
 /// A capability value.
 ///
 /// Dynamic because a device's capabilities are described by data, not by Rust
-/// types (README, "Device compatibility"). Typing happens at the edges: a
+/// types (the README design notes). Typing happens at the edges: a
 /// [`Capability`](crate::capability::Capability) declares the expected shape and
 /// range, and `Capability::accepts` rejects a mismatch before it reaches a
 /// device.

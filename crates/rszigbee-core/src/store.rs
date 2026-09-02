@@ -2,18 +2,24 @@
 //!
 //! `ZigbeeStore` holds **Zigbee domain state and nothing else.** An earlier
 //! design carried generic `get_blob`/`put_blob` methods so the MQTT layer had
-//! somewhere to keep its name registry and state cache; the review
-//! correctly identified that as an architecture smell. It
-//! violated the "MQTT must not leak into core" rule and would have become a
-//! dumping ground with no schema, no versioning and no owner.
+//! somewhere to keep its name registry and state cache. That violated the
+//! "MQTT must not leak into core" rule and would have become a dumping ground
+//! with no schema, no versioning and no owner.
 //!
 //! Layers above core own their own persistence. `rszigbee-mqtt` defines its own
 //! `MqttStore`; a future HTTP or gRPC adapter would do likewise.
 //!
 //! A deliberate omission: there is no generic `KeyValueStore` that both this
 //! trait's backends and `MqttStore` could share. It is the obvious eventual
-//! answer for single-backend deployments, and it is also exactly the premature
-//! generic abstraction the report warns against. Add it when someone asks.
+//! answer for single-backend deployments, and it is also a generic abstraction
+//! with no second caller yet. Add it when someone asks.
+
+pub mod conformance;
+#[cfg(feature = "file-store")]
+pub mod file;
+
+#[cfg(feature = "file-store")]
+pub use file::FileStore;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -26,12 +32,17 @@ use crate::device::{BasicInfo, DeviceKind, InterviewState, PowerSource};
 ///
 /// Losing or rolling back `frame_counter` breaks the network: replay protection
 /// rejects frames with a counter it has already seen. This is the single most
-/// dangerous field in the project (README, "Backup safety").
+/// dangerous field in the project (the README design notes).
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedNetwork {
     /// PAN id.
     pub pan_id: u16,
     /// Extended PAN id.
+    ///
+    /// Written as a hex string: this is routinely above 2^53, where a JSON
+    /// consumer using doubles corrupts it silently.
+    #[cfg_attr(feature = "file-store", serde(with = "rszigbee_spec::ids::hex_u64"))]
     pub extended_pan_id: u64,
     /// Channel.
     pub channel: u8,
@@ -47,6 +58,7 @@ pub struct PersistedNetwork {
 }
 
 /// One persisted endpoint.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedEndpoint {
     /// Endpoint number.
@@ -62,6 +74,7 @@ pub struct PersistedEndpoint {
 }
 
 /// One persisted device.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedDevice {
     /// Address.
@@ -112,6 +125,7 @@ impl PersistedDevice {
 }
 
 /// One persisted group.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedGroup {
     /// Group id.
@@ -121,6 +135,7 @@ pub struct PersistedGroup {
 }
 
 /// A stored coordinator backup.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupMeta {
     /// Identifier.
@@ -145,7 +160,7 @@ pub enum StoreError {
     /// How this is handled depends on what was corrupt: a corrupt state cache
     /// is quarantined and startup continues, but corrupt **network identity**
     /// must stop startup, because continuing means forming a new network and
-    /// orphaning every device (README, "Persistence").
+    /// orphaning every device (the README design notes).
     #[error("stored data is corrupt at {location}: {detail}")]
     Corrupt {
         /// What was being read.
@@ -220,6 +235,16 @@ pub trait ZigbeeStore: Send + Sync + 'static {
 
     /// Flushes anything buffered.
     fn flush(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+/// Milliseconds since the Unix epoch, saturating at zero before it.
+///
+/// Deliberately not a date library: a backup id has to be unique, lexically
+/// sortable and legible, and a dependency for that would not pay for itself.
+pub(crate) fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// An in-memory store. The default in tests, and always compiled.
@@ -312,7 +337,11 @@ impl ZigbeeStore for MemoryStore {
             i.backups.push((
                 BackupMeta {
                     id: id.clone(),
-                    taken_epoch_ms: 0,
+                    // A real timestamp, not zero: "restore the backup from
+                    // before the outage" has to be answerable against this
+                    // backend too, and a caller cannot tell which backend it
+                    // has. Asserted by the conformance suite.
+                    taken_epoch_ms: epoch_millis(),
                     adapter: adapter.to_owned(),
                     coordinator_ieee: coordinator,
                 },
@@ -474,5 +503,12 @@ mod tests {
         assert_eq!(s.load_groups().await.unwrap().len(), 1);
         s.delete_group(GroupId(7)).await.unwrap();
         assert!(s.load_groups().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_memory_store_conforms() {
+        // The same suite runs against FileStore. Two backends tested only
+        // separately are two backends free to drift apart.
+        conformance::assert_conforms(&MemoryStore::new()).await;
     }
 }

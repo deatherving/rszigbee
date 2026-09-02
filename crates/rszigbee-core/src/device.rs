@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 use rszigbee_spec::ids::{ClusterId, EndpointId, Ieee, Nwk, ProfileId};
 
 /// What kind of node this is.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeviceKind {
     /// The coordinator itself.
@@ -21,6 +22,7 @@ pub enum DeviceKind {
 }
 
 /// How the device is powered, as it reports in `genBasic.powerSource`.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PowerSource {
     /// Mains, any phase configuration.
@@ -43,6 +45,7 @@ pub enum PowerSource {
 /// `InProgress` is never persisted — it is written as `Pending` so that a crash
 /// mid-interview resumes rather than leaving a device stuck forever. Upstream
 /// does the same thing, and it is worth copying.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InterviewState {
     /// Not started, or resumed after an interrupted attempt.
@@ -76,6 +79,7 @@ impl InterviewState {
 }
 
 /// What `genBasic` told us.
+#[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BasicInfo {
     /// `manufacturerName`, with control characters stripped.

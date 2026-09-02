@@ -26,9 +26,10 @@
 //!
 //! # Status
 //!
-//! Phase 1 and the start of Phase 2. The types and the Ember adapter's
-//! lifecycle are in place; the runtime that drives them is not, so there is no
-//! `Zigbee::builder()` yet. What works today is the adapter directly:
+//! Early. The types, the codecs, persistence and the Ember adapter's lifecycle
+//! work against real hardware; the runtime that drives them does not exist yet,
+//! so there is no `Zigbee::builder()`. What works today is the adapter
+//! directly:
 //!
 //! ```no_run
 //! use rszigbee::adapter::{CoordinatorAdapter, MismatchPolicy, NetworkConfig};
@@ -96,9 +97,13 @@ pub use rszigbee_adapter::{
     AdapterCapabilities, AdapterError, AdapterEvent, CoordinatorAdapter, MismatchPolicy,
     NetworkConfig, StartOutcome,
 };
+#[cfg(feature = "file-store")]
+#[cfg_attr(docsrs, doc(cfg(feature = "file-store")))]
+pub use rszigbee_core::FileStore;
 pub use rszigbee_core::{
     Brightness, Capability, CapabilityId, CommandError, DeviceCommand, DeviceInfo, Event,
-    Reachability, StateChanges, StateValue, ZigbeeStore,
+    MemoryStore, PersistedDevice, PersistedNetwork, Reachability, StateChanges, StateValue,
+    StoreError, ZigbeeStore,
 };
 pub use rszigbee_spec::ids::{ClusterId, EndpointId, GroupId, Ieee, Nwk};
 

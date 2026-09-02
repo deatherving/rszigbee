@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/ezsp-probe"]
-# Spikes are throwaway probes against real hardware. Excluded so a broken or
-# fast-moving upstream dependency can never break `cargo test --workspace`,
-# and so nothing in the published crates can accidentally depend on one.
+members = ["crates/*"]
+# Spikes are throwaway probes against real hardware, excluded so a broken or
+# fast-moving upstream dependency can never break `cargo test --workspace` and
+# so nothing in the published crates can accidentally depend on one. Listing a
+# path in `members` overrides `exclude`, so it must appear in only one of them —
+# it was in both, which silently made the exclusion do nothing.
 exclude = ["spikes/ezsp-probe"]
 
 [workspace.package]
@@ -11,7 +13,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/rszigbee/rszigbee"
+repository = "https://github.com/deatherving/rszigbee"
 authors = ["The rszigbee contributors"]
 
 [workspace.dependencies]
@@ -33,7 +35,7 @@ elided_lifetimes_in_paths = "warn"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# The parse-path invariant from the Phase 0 report, section 43: a malformed
+# The parse-path invariant (see the README design notes): a malformed
 # frame from the radio must never take the process down. These four lints are
 # what enforce it; `clippy.toml` relaxes them inside tests, where asserting on
 # `decode(..).unwrap()` is how the invariant gets checked.

@@ -23,6 +23,13 @@ jobs:
       - run: cargo nextest run --workspace --all-features
       # Doc examples are part of the public API surface; they must not rot.
       - run: cargo test --workspace --all-features --doc
+      # A broken intra-doc link is a broken promise in the API documentation.
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The boundaries only hold if they hold in every feature combination.
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   boundaries:
     name: architectural boundaries
@@ -32,6 +39,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/check-boundaries.sh
+
+  # Non-blocking on purpose. The spike pins exact versions of a fast-moving
+  # upstream (`ezsp` went 10 -> 17 in six weeks), and it is excluded from the
+  # workspace precisely so that cannot break the published crates. Building it
+  # here means it gets noticed when it rots, without gating anything on it.
+  spike:
+    name: hardware spike (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --manifest-path spikes/ezsp-probe/Cargo.toml -- -D warnings
 
   licenses:
     name: dependency licences

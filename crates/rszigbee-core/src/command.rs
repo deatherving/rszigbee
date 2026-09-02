@@ -1,5 +1,5 @@
 //! The command model: capability-level commands with lower-level escape
-//! hatches, per the README, "Events and commands".
+//! hatches, per the the README design notes.
 
 use std::time::Duration;
 

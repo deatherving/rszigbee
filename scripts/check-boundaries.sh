@@ -14,6 +14,11 @@ ok()   { printf 'ok:   %s\n' "$*" >&2; }
 
 # A dependency check that silently sees an empty tree passes vacuously, which
 # is worse than no check at all. Fail loudly instead.
+# Default features only. The rule is that serialisation lives at system
+# boundaries, not that JSON is banned outright: `rszigbee-core/file-store`
+# legitimately pulls serde_json to write to disk. Checking with --all-features
+# would conflate "core parses JSON in its data path" with "core can persist",
+# and the first is the thing worth preventing.
 tree() {
   local out
   if ! out=$(cargo tree --quiet -p "$1" --edges normal --prefix none 2>&1); then
@@ -29,17 +34,30 @@ tree() {
   sort -u <<<"$out"
 }
 
-# --- rszigbee-core must not reach MQTT, JSON, or Home Assistant ---
+# --- rszigbee-core must not reach MQTT or Home Assistant ---
 core="$(tree rszigbee-core)"
-for forbidden in rumqttc rumqttd mqtt serde_json; do
+for forbidden in rumqttc rumqttd mqtt; do
   if grep -qi "^${forbidden} " <<<"$core"; then
     bad "rszigbee-core depends on '${forbidden}'"
-    note "MQTT and JSON belong in rszigbee-mqtt. See README, "Boundaries"."
+    note 'MQTT belongs in rszigbee-mqtt. See README, "Boundaries".'
   fi
 done
-grep -qi 'homeassistant\|home-assistant' <<<"$core" \
-  && bad "rszigbee-core depends on a Home Assistant crate" \
-  || ok "rszigbee-core is free of MQTT, JSON and Home Assistant"
+
+# serde_json must stay out of the DEFAULT graph. The rule is that serialisation
+# lives at system boundaries, not that JSON is banned: rszigbee-core/file-store
+# legitimately pulls it to write to disk. What must never happen is JSON on the
+# internal data path, or a caller using only MemoryStore linking a JSON parser.
+if grep -qi '^serde_json ' <<<"$core"; then
+  bad "rszigbee-core pulls serde_json with default features"
+  note 'Persistence formats belong behind the "file-store" feature.'
+fi
+
+if grep -qi 'homeassistant\|home-assistant' <<<"$core"; then
+  bad "rszigbee-core depends on a Home Assistant crate"
+fi
+# Only claim the section passed if nothing in it failed, or the summary
+# contradicts the failure printed just above it.
+[ "$fail" -eq 0 ] && ok "rszigbee-core is free of MQTT, Home Assistant and default-on JSON"
 
 # --- EZSP must be contained in the Ember adapter ---
 # The rule the architecture rests on: core and the adapter trait do not know
@@ -94,7 +112,7 @@ fi
 if awk '/pub trait ZigbeeStore/,/^}/' crates/rszigbee-core/src/store.rs \
      | grep -qiE 'blob|mqtt|homeassistant|discovery'; then
   bad "ZigbeeStore has gained a blob/MQTT/Home Assistant method"
-  note "Layers above core own their own persistence. See README, "Persistence"."
+  note "Layers above core own their own persistence. See the README design notes."
 else
   ok "ZigbeeStore holds only Zigbee domain state"
 fi

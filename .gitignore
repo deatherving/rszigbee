@@ -4,3 +4,9 @@ target/
 # Design docs and ADRs are kept out of the public repository; the reasoning the
 # code depends on is consolidated into README.md.
 /docs
+
+# Python bytecode from scripts/.
+__pycache__/
+
+# Local editing helper, not part of the project.
+/scripts/edit.py

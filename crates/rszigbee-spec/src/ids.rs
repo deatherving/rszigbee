@@ -5,6 +5,9 @@
 
 use core::fmt;
 
+#[cfg(feature = "serde")]
+use alloc::string::String;
+
 /// A 64-bit IEEE (EUI-64) address, the permanent identity of a Zigbee node.
 ///
 /// `Display` renders the canonical Zigbee2MQTT-compatible form, lowercase hex
@@ -87,10 +90,55 @@ impl fmt::Debug for Ieee {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for Ieee {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // The canonical string, not a u64: it matches what Zigbee2MQTT writes
+        // so an import reads naturally, it survives JSON consumers that store
+        // numbers as doubles, and a persisted file stays greppable by address.
+        s.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Ieee {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = <String as serde::Deserialize>::deserialize(d)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 impl core::str::FromStr for Ieee {
     type Err = ParseIeeeError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
+    }
+}
+
+/// Serialises a `u64` as a `0x`-prefixed hex string.
+///
+/// Necessary, not cosmetic: a 64-bit value above 2^53 cannot round-trip through
+/// a JSON consumer that stores numbers as doubles, and it silently corrupts
+/// rather than failing. An extended PAN id is routinely above that, so writing
+/// one as a bare number produces a file that other tools mis-read.
+#[cfg(feature = "serde")]
+pub mod hex_u64 {
+    use alloc::string::String;
+
+    /// Serialises as `0x` followed by 16 hex digits.
+    pub fn serialize<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(&format_args!("0x{v:016x}"))
+    }
+
+    /// Accepts the `0x` form, and a bare number for forward compatibility with
+    /// files written before this was fixed.
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let raw = <String as serde::Deserialize>::deserialize(d)?;
+        let body = raw
+            .strip_prefix("0x")
+            .or_else(|| raw.strip_prefix("0X"))
+            .unwrap_or(&raw);
+        u64::from_str_radix(body, 16).map_err(serde::de::Error::custom)
     }
 }
 
@@ -108,6 +156,8 @@ pub enum ParseIeeeError {
 /// A 16-bit network (short) address. Reassigned on rejoin, so never use it as
 /// a durable identity — that is what [`Ieee`] is for.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Nwk(u16);
 
 impl Nwk {
@@ -147,6 +197,8 @@ impl fmt::Debug for Nwk {
 
 /// A ZCL cluster identifier.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ClusterId(pub u16);
 
 impl fmt::Debug for ClusterId {
@@ -163,6 +215,8 @@ impl fmt::Display for ClusterId {
 
 /// A ZCL attribute identifier, scoped to a cluster.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct AttrId(pub u16);
 
 impl fmt::Debug for AttrId {
@@ -173,6 +227,8 @@ impl fmt::Debug for AttrId {
 
 /// A ZCL command identifier, scoped to a cluster and a direction.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct CommandId(pub u8);
 
 impl fmt::Debug for CommandId {
@@ -184,6 +240,8 @@ impl fmt::Debug for CommandId {
 /// An endpoint number. `0` is ZDO; `1..=240` are application endpoints;
 /// `255` is the broadcast endpoint.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EndpointId(pub u8);
 
 impl EndpointId {
@@ -209,6 +267,8 @@ impl fmt::Display for EndpointId {
 
 /// A Zigbee group identifier.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct GroupId(pub u16);
 
 impl fmt::Debug for GroupId {
@@ -219,6 +279,8 @@ impl fmt::Debug for GroupId {
 
 /// A ZCL profile identifier.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ProfileId(pub u16);
 
 impl ProfileId {
@@ -238,6 +300,8 @@ impl fmt::Debug for ProfileId {
 
 /// A manufacturer code as allocated by the Connectivity Standards Alliance.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ManufacturerCode(pub u16);
 
 impl fmt::Debug for ManufacturerCode {

@@ -11,7 +11,7 @@ keywords = ["zigbee", "zcl", "zdo", "protocol"]
 categories = ["network-programming", "no-std"]
 
 # Sans-IO by construction: no tokio, no serial, no I/O of any kind.
-# See the Phase 0 report, section 21 (dependency rules).
+# See the README, "Boundaries".
 [dependencies]
 thiserror.workspace = true
 serde = { workspace = true, optional = true, features = ["derive", "alloc"] }

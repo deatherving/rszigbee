@@ -2,7 +2,7 @@
 //!
 //! The type system has to be dynamic. A device's clusters are described by
 //! data — the global cluster table plus per-device custom clusters registered
-//! at runtime (README, "Manufacturer-specific clusters") — so the decoder learns an
+//! at runtime (the README design notes) — so the decoder learns an
 //! attribute's type from the registry or from the frame, not from a Rust type
 //! parameter. Static typing happens one level up, where a `Capability`
 //! declares what it expects and rejects a mismatch.
@@ -165,7 +165,7 @@ pub enum ZclValue {
     /// An IEEE address.
     Ieee(crate::ids::Ieee),
     /// A 128-bit key. Never rendered by `Display`; see the security notes in
-    /// the README, "The parse-path invariant".
+    /// the the README design notes.
     Key128([u8; 16]),
     /// Opaque bytes for a type this build does not model.
     Raw {

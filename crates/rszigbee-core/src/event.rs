@@ -1,7 +1,7 @@
 //! The event model.
 //!
 //! Four deliberate departures from `Zigbee2MQTT`'s internal model, all argued in
-//! the README, "Events and commands":
+//! the the README design notes:
 //!
 //! 1. [`Event::StateChanged`] carries **only the delta**. Publishing the whole
 //!    cached state is an MQTT compatibility behaviour, not an application need;

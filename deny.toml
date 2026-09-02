@@ -1,5 +1,5 @@
 # Dependency licence policy. The workspace intent is `MIT OR Apache-2.0`
-# throughout (report section 44.5, ADR-0001), so the allow-list is limited to
+# throughout (see the README licence section), so the allow-list is limited to
 # licences compatible with that and with redistribution in a permissive crate.
 [licenses]
 allow = [
@@ -11,13 +11,34 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # Public-domain-equivalent and attribution-free respectively. Both are
+    # permissive; CC0-1.0 is listed because it grants no patent licence, which
+    # some downstream policies treat as disqualifying even though it is more
+    # permissive than MIT in every other respect.
+    "CC0-1.0",
+    "0BSD",
 ]
 confidence-threshold = 0.9
+
+# Copyleft is allowed per dependency, never per licence.
+#
+# MPL-2.0 is file-level ("weak") copyleft: using an unmodified MPL file imposes
+# no obligation on rszigbee's own code, and MPL-2.0 s3.3 explicitly permits
+# distributing the larger work under other terms. So `MIT OR Apache-2.0` holds
+# for what we write. What it does mean is that a distributor has to pass the
+# notice along, which is why `serialport` is named in
+# THIRD_PARTY_LICENSES.md.
+#
+# Named individually, not allowed as a licence, so that a *new* copyleft
+# dependency still fails the check instead of arriving unnoticed.
+[[licenses.exceptions]]
+name = "serialport"
+allow = ["MPL-2.0"]
 
 [bans]
 multiple-versions = "warn"
 # A copyleft dependency would silently change the licence obligations of any
-# crate that links it. If one is ever needed, it needs an ADR first.
+# crate that links it, so it is admitted only through a named exception above.
 deny = []
 
 [advisories]

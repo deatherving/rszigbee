@@ -51,7 +51,12 @@ pub use reachability::{
     ReachabilityPolicy, SilencePolicy,
 };
 pub use state::{Priority, StateChanges, StateSnapshot, StateValue};
-pub use store::{MemoryStore, PersistedDevice, PersistedNetwork, StoreError, ZigbeeStore};
+#[cfg(feature = "file-store")]
+pub use store::FileStore;
+pub use store::{
+    BackupMeta, MemoryStore, PersistedDevice, PersistedEndpoint, PersistedGroup, PersistedNetwork,
+    StoreError, ZigbeeStore,
+};
 
 /// Re-exported so downstream crates need not depend on the adapter crate
 /// directly for the handful of types that cross into the public API.

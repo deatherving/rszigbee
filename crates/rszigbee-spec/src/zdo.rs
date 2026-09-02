@@ -3,7 +3,7 @@
 //!
 //! Only the requests the interview and the vertical slice need are enumerated.
 //! The full 116-cluster table plus response codecs is generated from upstream
-//! data in a later phase (README, "What is transcoded, not invented").
+//! data in a later phase (the README credits).
 
 pub mod codec;
 

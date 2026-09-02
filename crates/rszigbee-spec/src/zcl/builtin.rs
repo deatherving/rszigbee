@@ -3,7 +3,7 @@
 //! **This module is temporary.** The full 129-cluster table is declarative data
 //! in zigbee-herdsman (`src/zspec/zcl/definition/cluster.ts`, 7,400 lines, MIT)
 //! and will be transcoded into generated Rust in Phase 3 rather than typed by
-//! hand (README, "What is transcoded, not invented"). What is here is exactly the set
+//! hand (the README credits). What is here is exactly the set
 //! the vertical slice needs — enough to pair, interview and switch a plug — so
 //! that the registry has real content to be tested against before the
 //! generator exists.

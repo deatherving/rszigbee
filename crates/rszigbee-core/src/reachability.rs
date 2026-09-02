@@ -1,7 +1,6 @@
 //! Reachability: facts and mechanism in core, policy injected.
 //!
-//! This module is the r2/r3 correction from the Phase 0 review. An earlier
-//! design put all of availability in the MQTT compatibility layer, which would
+//! An earlier design put all of availability in the MQTT layer, which would
 //! have meant "you get no availability unless you run MQTT" — unacceptable for
 //! embedded use, where an application has exactly the same need to know whether
 //! a device is answering.

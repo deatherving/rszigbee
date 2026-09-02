@@ -27,7 +27,7 @@ use rszigbee::ember::EmberAdapter;
 use rszigbee::spec::zdo::{
     self, ZdoClusterId, decode_active_ep_rsp, decode_node_desc_rsp, decode_simple_desc_rsp,
 };
-use rszigbee::{Ieee, Nwk};
+use rszigbee::{FileStore, Ieee, Nwk, PersistedNetwork, ZigbeeStore};
 
 /// How long to wait for one ZDO response before giving up on it.
 const ZDO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,6 +45,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: ember_selftest <serial-path> [--form]")?
         .clone();
     let may_form = args.iter().any(|a| a == "--form");
+
+    // Persistence: without this, a formed network's key is lost when the
+    // process exits, and every joined device would have to be re-paired.
+    let store = FileStore::open(
+        std::env::var("RSZIGBEE_DATA").unwrap_or_else(|_| "./rszigbee-data".into()),
+    )
+    .await?;
+    println!("store: {}", store.root().display());
+    let stored = store.load_network().await?;
+    if let Some(n) = &stored {
+        println!(
+            "stored network: pan 0x{:04x}, channel {}, frame counter {}",
+            n.pan_id, n.channel, n.frame_counter
+        );
+    } else {
+        println!("stored network: none yet");
+    }
 
     let (mut adapter, mut events) = EmberAdapter::serial(&path).build();
 
@@ -74,20 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("outcome: {outcome:?}");
 
-    if let Some(formed) = adapter.formed_network() {
-        println!(
-            "formed: pan 0x{:04x}, ext_pan 0x{:016x}, channel {}",
-            formed.pan_id, formed.extended_pan_id, formed.channel
-        );
-        // Deliberately not printed. The runtime will persist it once storage is
-        // wired; losing it means losing the network.
-        println!(
-            "network key: generated, {} bytes (not logged)",
-            formed.network_key.expose().len()
-        );
-    }
-
     let coordinator = adapter.coordinator_ieee().await?;
+    let live = adapter.network_info().await.ok();
+    persist(&store, &adapter, stored.as_ref(), coordinator, live).await?;
+
     println!("coordinator: {coordinator}");
     println!("firmware:    {}", adapter.firmware().await?.version);
     match adapter.network_info().await {
@@ -102,6 +109,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     adapter.stop().await?;
     println!("\nstopped cleanly");
+    Ok(())
+}
+
+/// Writes what we learned about the network to the store.
+///
+/// A formed network must be persisted before anything else can fail: its key
+/// exists only in memory until it is written, and a network whose key was never
+/// written is lost on the next restart with no way to recover it.
+async fn persist(
+    store: &FileStore,
+    adapter: &EmberAdapter,
+    stored: Option<&PersistedNetwork>,
+    coordinator: Ieee,
+    live: Option<rszigbee::adapter::NetworkInfo>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(formed) = adapter.formed_network() {
+        println!(
+            "formed: pan 0x{:04x}, ext_pan 0x{:016x}, channel {}",
+            formed.pan_id, formed.extended_pan_id, formed.channel
+        );
+        // Persisted immediately, before anything else can fail. A formed
+        // network whose key was never written is a network that is lost on the
+        // next restart, and there is no way to recover it afterwards.
+        store
+            .save_network(&PersistedNetwork {
+                pan_id: formed.pan_id,
+                extended_pan_id: formed.extended_pan_id,
+                channel: formed.channel,
+                nwk_update_id: 0,
+                coordinator_ieee: coordinator,
+                key_sequence: 0,
+                // A freshly formed network starts at zero. The runtime will
+                // track this going forward; restoring a stale counter is what
+                // breaks replay protection.
+                frame_counter: 0,
+            })
+            .await?;
+        // The key itself is never printed.
+        println!(
+            "network key: generated and persisted ({} bytes)",
+            formed.network_key.expose().len()
+        );
+    } else if let Some(n) = live {
+        // Resumed rather than formed. The parameters are still worth writing:
+        // they are how a later run notices that the coordinator was swapped or
+        // that the channel moved. The network key is deliberately absent --
+        // the coordinator holds it and will not hand it back, so a store record
+        // after a resume can describe the network but not reconstruct it. That
+        // is what coordinator backups are for.
+        if let Some(prev) = &stored {
+            if prev.coordinator_ieee != coordinator {
+                // Exactly the situation that must never be resolved silently:
+                // every device's link key was derived against the old address.
+                println!(
+                    "WARNING: stored coordinator {} but this one is {coordinator}",
+                    prev.coordinator_ieee
+                );
+            } else if prev.pan_id != n.pan_id {
+                println!(
+                    "WARNING: stored pan 0x{:04x} but the coordinator is on 0x{:04x}",
+                    prev.pan_id, n.pan_id
+                );
+            }
+        }
+        store
+            .save_network(&PersistedNetwork {
+                pan_id: n.pan_id,
+                extended_pan_id: n.extended_pan_id,
+                channel: n.channel,
+                nwk_update_id: n.nwk_update_id,
+                coordinator_ieee: coordinator,
+                key_sequence: 0,
+                frame_counter: 0,
+            })
+            .await?;
+        println!("persisted the resumed network (no key: the coordinator holds it)");
+    }
+
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 //! external JSON API with a raw access bitmask, stringly-typed units and the
 //! endpoint name baked into the property name; reproducing it here would push
 //! MQTT's shape into the core. The MQTT compatibility layer maps
-//! `&[Capability]` to `exposes` (README, "Capabilities vs exposes"), and that mapping
+//! `&[Capability]` to `exposes` (the README design notes), and that mapping
 //! is verified against thousands of real upstream definitions before any
 //! hardware is involved.
 //!

@@ -1,8 +1,30 @@
 # Third-party licences
 
 Generated dependency licences will be produced by `cargo about` in CI. This file
-records the **upstream projects rszigbee derives data or design from**, whose
-obligations do not appear in a dependency graph.
+records two things a dependency graph does not show on its own: the **upstream
+projects rszigbee derives data or design from**, and the one **dependency whose
+licence carries an obligation for anyone redistributing a binary**.
+
+---
+
+## serialport (a redistribution obligation)
+
+**MPL-2.0.** <https://github.com/serialport/serialport-rs>
+
+Reached transitively, and only by `rszigbee-adapter-ember`:
+`tokio-serial` → `mio-serial` → `serialport`. Enabled by the `ember` feature,
+so a build without a serial coordinator family does not include it.
+
+MPL-2.0 is *file-level* copyleft. rszigbee does not modify any MPL-covered file,
+and MPL-2.0 §3.3 permits distributing the larger work under other terms, so
+rszigbee's own code stays `MIT OR Apache-2.0`. The obligation that does travel:
+**anyone distributing a binary containing it must make the MPL-covered source
+available and pass the notice along.** For a source distribution — a crates.io
+release, or building from this repository — the requirement is already met,
+because Cargo fetches serialport's source unmodified.
+
+Admitted through a named exception in `deny.toml` rather than by allowing
+MPL-2.0 generally, so a new copyleft dependency still fails CI.
 
 ---
 

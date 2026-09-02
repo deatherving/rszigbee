@@ -156,7 +156,7 @@ impl ClusterRegistry {
     /// A registry preloaded with the clusters this crate ships.
     ///
     /// The full 129-cluster table is generated from upstream data in a later
-    /// phase (README, "What is transcoded, not invented"); the hand-written set here is the
+    /// phase (the README credits); the hand-written set here is the
     /// vertical-slice subset.
     #[must_use]
     pub fn with_builtins() -> Self {
