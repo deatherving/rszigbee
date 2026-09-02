@@ -2,6 +2,7 @@
 
 pub mod builtin;
 pub mod frame;
+pub mod generated;
 pub mod registry;
 pub mod types;
 

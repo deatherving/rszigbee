@@ -41,6 +41,16 @@ pub struct CommandDef {
     pub name: String,
     /// Ordered parameters.
     pub params: Vec<ParamDef>,
+    /// Set when at least one parameter has a type this crate cannot express.
+    ///
+    /// Ten percent of the ZCL command set takes composite or list-valued
+    /// parameters — scene extension field sets, group lists — which
+    /// [`ZclType`] has no representation for. Such a command is still worth
+    /// knowing by name, because that is how a received frame gets identified;
+    /// what must not happen is *encoding* one, because an empty parameter list
+    /// would produce a frame that is silently too short. Encoders check this
+    /// and refuse.
+    pub untyped_parameters: bool,
 }
 
 /// One parameter of a command.
@@ -99,6 +109,39 @@ impl ClusterDef {
 
     /// Adds a client-to-server command.
     #[must_use]
+    pub fn cmd_untyped(mut self, id: u8, name: &str) -> Self {
+        self.commands.insert(
+            id,
+            CommandDef {
+                id: CommandId(id),
+                name: name.into(),
+                params: Vec::new(),
+                untyped_parameters: true,
+            },
+        );
+        self
+    }
+
+    /// Declares a server-to-client response whose parameters cannot be typed.
+    #[must_use]
+    pub fn rsp_untyped(mut self, id: u8, name: &str) -> Self {
+        self.responses.insert(
+            id,
+            CommandDef {
+                id: CommandId(id),
+                name: name.into(),
+                params: Vec::new(),
+                untyped_parameters: true,
+            },
+        );
+        self
+    }
+
+    /// Declares a client-to-server command whose parameters cannot be typed.
+    ///
+    /// The command is named so a received frame can be identified, and marked
+    /// so it cannot be encoded.
+    #[must_use]
     pub fn cmd(mut self, id: u8, name: &str, params: &[(&str, ZclType)]) -> Self {
         self.commands.insert(id, Self::def(id, name, params));
         self
@@ -122,6 +165,7 @@ impl ClusterDef {
                     ty: *t,
                 })
                 .collect(),
+            untyped_parameters: false,
         }
     }
 

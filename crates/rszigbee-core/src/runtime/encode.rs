@@ -91,6 +91,21 @@ pub enum EncodeError {
     /// Nothing to write.
     #[error("an attribute write with no attributes would be a no-op frame")]
     NoAttributes,
+
+    /// The command takes a parameter this build cannot encode.
+    ///
+    /// Refused rather than sent without it. Ten percent of the ZCL command set
+    /// takes composite or list-valued parameters, and emitting the command with
+    /// an empty payload would produce a frame that is silently too short — the
+    /// device would either reject it or act on whatever followed in its buffer.
+    #[error(
+        "command '{command}' takes parameters this build cannot encode \
+         (composite or list-valued), so it is refused rather than sent short"
+    )]
+    UntypedParameters {
+        /// The command's name.
+        command: String,
+    },
 }
 
 /// Encodes a cluster-specific command.
@@ -114,6 +129,12 @@ pub fn command(
                 cluster: request.cluster.0,
                 command: request.command.0,
             })?;
+
+    if definition.untyped_parameters {
+        return Err(EncodeError::UntypedParameters {
+            command: definition.name.clone(),
+        });
+    }
 
     // Reject unknown names before encoding anything, so a typo is an error
     // rather than a silently short frame.

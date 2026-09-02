@@ -966,6 +966,33 @@ mod tests {
     }
 
     #[test]
+    fn a_command_with_composite_parameters_is_refused_not_sent_short() {
+        // `genScenes.add` takes extension field sets, which have no `ZclType`.
+        // Encoding it with an empty payload would send a frame that is
+        // silently too short, and the device would either reject it or act on
+        // whatever followed in its buffer.
+        let registry = rszigbee_spec::zcl::registry::ClusterRegistry::with_builtins();
+        let error = crate::runtime::encode::command(
+            &registry,
+            Ieee::new(0x1),
+            0,
+            &crate::command::ZclCommand {
+                endpoint: Some(EndpointId(1)),
+                cluster: ClusterId(0x0005),
+                command: CommandId(0x00),
+                params: Vec::new(),
+                manufacturer: None,
+                disable_default_response: false,
+            },
+        )
+        .expect_err("a command with untypeable parameters must be refused");
+        assert!(
+            matches!(error, crate::runtime::EncodeError::UntypedParameters { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_bulb_does_not_turn_its_own_commands_into_actions() {
         // A light *has* on/off; it does not *emit* it. Without this a bulb
         // echoing a command back would look like a button press.

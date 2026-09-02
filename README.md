@@ -89,7 +89,7 @@ while let Some(event) = events.recv().await {
 | Crate | Role |
 |---|---|
 | **`rszigbee`** | the facade — what you depend on |
-| `rszigbee-spec` | ZCL and ZDO codecs, cluster registry, address types. Sans-IO |
+| `rszigbee-spec` | ZCL and ZDO codecs, the 129-cluster registry, address types. Sans-IO |
 | `rszigbee-adapter` | the `CoordinatorAdapter` trait and a mock adapter |
 | `rszigbee-adapter-ember` | Silicon Labs EmberZNet, via EZSP over ASHv2 |
 | `rszigbee-core` | the runtime, device model, state, events, commands, reachability, persistence |

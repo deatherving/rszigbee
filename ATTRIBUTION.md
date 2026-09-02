@@ -37,7 +37,11 @@ citizenship and strategically fragile.
 ## zigbee-herdsman (MIT)
 
 - The ZCL cluster, attribute, command and data-type tables, and the ZDO cluster
-  definitions, transcoded as data.
+  definitions, transcoded as data. `crates/rszigbee-spec/src/zcl/generated.rs`
+  is generated from herdsman's own runtime definitions by
+  `scripts/refresh-clusters.sh`: 129 clusters, 1,354 attributes, 424 commands.
+  Cluster and attribute names keep upstream's spelling deliberately, because
+  those names are what the ecosystem's accumulated knowledge is written in.
 - The `Adapter` boundary, which has survived six adapter families and is the
   right place to cut. `CoordinatorAdapter` is a Rust rendering of it.
 - The interview sequence and its quirk registry. This is field knowledge that
