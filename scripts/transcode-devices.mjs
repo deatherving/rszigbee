@@ -21,6 +21,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import {Zcl} from 'zigbee-herdsman';
+
+/**
+ * Enum members upstream references by name, resolved to their values.
+ *
+ * `type: Zcl.DataType.SINGLE_PREC` is not a literal, so without this a custom
+ * cluster's attributes cannot be typed and the whole definition is refused.
+ * Taken from herdsman's own runtime enums rather than a copied table, so the
+ * numbers cannot drift.
+ */
+const ENUMS = new Map();
+for (const [group, table] of [
+  ['DataType', Zcl.DataType],
+  ['ManufacturerCode', Zcl.ManufacturerCode],
+  ['Status', Zcl.Status],
+]) {
+  for (const [member, value] of Object.entries(table)) {
+    if (typeof value === 'number') {
+      ENUMS.set(`Zcl.${group}.${member}`, value);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // The primitives rszigbee actually implements today.
@@ -52,6 +74,7 @@ const KNOWN_EXTENDS = new Map([
   ['m.commandsOnOff', 'CommandsOnOff'],
   ['m.forcePowerSource', 'ForcePowerSource'],
   ['tuya.modernExtend.tuyaBase', 'TuyaBase'],
+  ['m.deviceAddCustomCluster', 'AddCustomCluster'],
 ]);
 
 /**
@@ -269,6 +292,11 @@ function literal(node) {
   // reports its own range, do not hard-code one", which is expressible. Left
   // as non-literal it was the single largest blocker in the report.
   if (ts.isIdentifier(node) && node.text === 'undefined') return null;
+  // `Zcl.DataType.SINGLE_PREC` and friends, resolved from herdsman's enums.
+  if (ts.isPropertyAccessExpression(node)) {
+    const resolved = ENUMS.get(node.getText().replace(/\s+/g, ''));
+    if (resolved !== undefined) return resolved;
+  }
   if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.MinusToken) {
     const inner = literal(node.operand);
     return typeof inner === 'number' ? -inner : NOT_LITERAL;
@@ -399,6 +427,18 @@ function transcodeExtend(def) {
     const known = KNOWN_EXTENDS.get(name);
     const args = ts.isCallExpression(el) ? el.arguments.map(literal) : [];
     const nonLiteral = args.some((a) => a === NOT_LITERAL);
+    // A manufacturer-specific cluster, carried as data. Without it a frame
+    // from that cluster cannot be decoded at all: its attributes have no known
+    // types, so the device reports nothing usable.
+    if (name === 'm.deviceAddCustomCluster') {
+      const custom = customCluster(el);
+      if (custom) {
+        out.push({helper: 'AddCustomCluster', args: custom});
+      } else {
+        missing.push({primitive: 'm.deviceAddCustomCluster:shape', kind: 'rust'});
+      }
+      continue;
+    }
     if (!known && VENDOR_ONOFF_WRAPPERS.has(name)) {
       out.push({helper: 'OnOff', args: {}});
       approximations.push({
@@ -432,6 +472,82 @@ function transcodeExtend(def) {
     out.push({helper: known, args: args[0] ?? {}});
   }
   return {value: out, missing, approximations};
+}
+
+/**
+ * Extracts a custom cluster definition from a `deviceAddCustomCluster` call.
+ *
+ * Returns undefined when any part cannot be evaluated exactly. A partially
+ * transcoded custom cluster is worse than none: an attribute with a guessed
+ * type decodes to the wrong value, silently.
+ */
+function customCluster(call) {
+  const args = call.arguments;
+  if (args.length < 2) return undefined;
+  const spec = args[1];
+  if (!ts.isObjectLiteralExpression(spec)) return undefined;
+
+  const id = literal(prop(spec, 'ID'));
+  if (typeof id !== 'number') return undefined;
+  const name = literal(args[0]) ?? literal(prop(spec, 'name'));
+  if (typeof name !== 'string') return undefined;
+  const manufacturer = literal(prop(spec, 'manufacturerCode'));
+
+  /** `{attrName: {ID, type}}` to `[[id, name, tag]]`. */
+  const attributes = [];
+  const attrNode = prop(spec, 'attributes');
+  if (attrNode && ts.isObjectLiteralExpression(attrNode)) {
+    for (const entry of attrNode.properties) {
+      if (!ts.isPropertyAssignment(entry)) return undefined;
+      const key = entry.name.getText().replace(/["']/g, '');
+      const attrId = literal(prop(entry.initializer, 'ID'));
+      const type = literal(prop(entry.initializer, 'type'));
+      if (typeof attrId !== 'number' || typeof type !== 'number') return undefined;
+      attributes.push([attrId, key, type]);
+    }
+  }
+
+  /** `{cmdName: {ID, parameters}}` to `[[id, name, [[param, tag]]]]`. */
+  const readCommands = (key) => {
+    const node = prop(spec, key);
+    const out = [];
+    if (!node || !ts.isObjectLiteralExpression(node)) return out;
+    for (const entry of node.properties) {
+      if (!ts.isPropertyAssignment(entry)) return null;
+      const cmdName = entry.name.getText().replace(/["']/g, '');
+      const cmdId = literal(prop(entry.initializer, 'ID'));
+      if (typeof cmdId !== 'number') return null;
+      const params = [];
+      const paramNode = prop(entry.initializer, 'parameters');
+      if (paramNode && ts.isArrayLiteralExpression(paramNode)) {
+        for (const p of paramNode.elements) {
+          const pName = literal(prop(p, 'name'));
+          const pType = literal(prop(p, 'type'));
+          // A composite parameter type has no representation, so the whole
+          // cluster is refused rather than emitted with a wrong one.
+          if (typeof pName !== 'string' || typeof pType !== 'number' || pType > 255) {
+            return null;
+          }
+          params.push([pName, pType]);
+        }
+      }
+      out.push([cmdId, cmdName, params]);
+    }
+    return out;
+  };
+
+  const commands = readCommands('commands');
+  const responses = readCommands('commandsResponse');
+  if (commands === null || responses === null) return undefined;
+
+  return {
+    name,
+    id,
+    manufacturer: typeof manufacturer === 'number' ? manufacturer : null,
+    attributes,
+    commands,
+    responses,
+  };
 }
 
 function transcodeExposes(def) {

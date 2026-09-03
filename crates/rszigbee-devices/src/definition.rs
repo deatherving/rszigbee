@@ -269,6 +269,15 @@ pub enum Extend {
         source: PowerSourceHint,
     },
 
+    /// A manufacturer-specific cluster this device has, which the standard
+    /// table does not describe.
+    ///
+    /// Registered against the device rather than globally, because the same
+    /// cluster id means different things to different manufacturers. Without
+    /// it a frame from that cluster cannot be decoded at all — its attributes
+    /// have no known types — so the device reports nothing usable.
+    AddCustomCluster(CustomCluster),
+
     /// Something the transcoder could not express as data.
     ///
     /// Kept rather than dropped, and deliberately not silent. A definition
@@ -282,6 +291,55 @@ pub enum Extend {
         /// What it would take, for whoever picks it up.
         note: String,
     },
+}
+
+/// One custom attribute: `(id, name, wire type tag)`.
+///
+/// The tag rather than a decoded type, so this crate stays free of the ZCL
+/// type model and resolution happens once, where the registry is built.
+pub type CustomAttribute = (u16, String, u8);
+
+/// One custom command: `(id, name, ordered parameters)`.
+pub type CustomCommand = (u8, String, Vec<CustomParameter>);
+
+/// One command parameter: `(name, wire type tag)`.
+pub type CustomParameter = (String, u8);
+
+/// A manufacturer-specific cluster definition.
+///
+/// The same shape as a standard cluster, carried per device. The id is not
+/// unique across manufacturers, which is exactly why this is scoped to the
+/// devices whose definition declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[non_exhaustive]
+pub struct CustomCluster {
+    /// The name, keeping upstream's spelling.
+    pub name: String,
+    /// The cluster id.
+    pub id: ClusterId,
+    /// The manufacturer code, when the cluster requires one on every request.
+    pub manufacturer: Option<u16>,
+    /// Attributes.
+    pub attributes: Vec<CustomAttribute>,
+    /// Client-to-server commands.
+    pub commands: Vec<CustomCommand>,
+    /// Server-to-client responses.
+    pub responses: Vec<CustomCommand>,
+}
+
+impl Default for CustomCluster {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            id: ClusterId(0),
+            manufacturer: None,
+            attributes: Vec::new(),
+            commands: Vec::new(),
+            responses: Vec::new(),
+        }
+    }
 }
 
 /// What a device is actually powered by, when it misreports.

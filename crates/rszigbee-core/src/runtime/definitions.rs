@@ -16,7 +16,8 @@
 //! that" is distinguishable from "rszigbee cannot express that yet".
 
 use rszigbee_devices::{Definition, DeviceMatch, Extend, NumericSpec};
-use rszigbee_spec::ids::{AttrId, ClusterId, CommandId, EndpointId};
+use rszigbee_spec::ids::{AttrId, ClusterId, CommandId, EndpointId, ManufacturerCode};
+use rszigbee_spec::zcl::registry::ClusterDef;
 use rszigbee_spec::zcl::types::{ZclType, ZclValue};
 
 use crate::capability::CapabilityId;
@@ -303,6 +304,46 @@ fn well_known(extend: &Extend) -> Option<Vec<Source>> {
 /// report, which is the hot path.
 fn leak(name: &str) -> &'static str {
     Box::leak(name.to_owned().into_boxed_str())
+}
+
+/// The manufacturer-specific clusters a definition declares.
+///
+/// Registered against the device rather than globally: the same cluster id
+/// means different things to different manufacturers, so a global registration
+/// would make one vendor's device decode another vendor's frames with the
+/// wrong attribute types.
+#[must_use]
+pub fn custom_clusters(definition: &Definition) -> Vec<ClusterDef> {
+    definition
+        .extend
+        .iter()
+        .filter_map(|e| match e {
+            Extend::AddCustomCluster(custom) => Some(custom),
+            _ => None,
+        })
+        .map(|custom| {
+            let mut def = ClusterDef::new(custom.id.0, &custom.name);
+            def.manufacturer = custom.manufacturer.map(ManufacturerCode);
+            for (id, name, tag) in &custom.attributes {
+                def = def.attr(*id, name, ZclType::from_u8(*tag));
+            }
+            for (id, name, params) in &custom.commands {
+                let typed: Vec<(&str, ZclType)> = params
+                    .iter()
+                    .map(|(n, tag)| (n.as_str(), ZclType::from_u8(*tag)))
+                    .collect();
+                def = def.cmd(*id, name, &typed);
+            }
+            for (id, name, params) in &custom.responses {
+                let typed: Vec<(&str, ZclType)> = params
+                    .iter()
+                    .map(|(n, tag)| (n.as_str(), ZclType::from_u8(*tag)))
+                    .collect();
+                def = def.rsp(*id, name, &typed);
+            }
+            def
+        })
+        .collect()
 }
 
 /// Names the action a received cluster command represents.

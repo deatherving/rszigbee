@@ -1510,6 +1510,93 @@ mod definition_integration {
         assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
     }
 
+    #[tokio::test]
+    async fn a_custom_cluster_is_registered_so_its_frames_decode() {
+        // Without the registration a manufacturer-specific cluster's
+        // attributes have no known types, so a frame from it decodes to
+        // nothing and the device looks like it reports rubbish.
+        let mut custom = rszigbee_devices::CustomCluster::default();
+        custom.name = "boschEnergyDevice".into();
+        custom.id = ClusterId(0xfca0);
+        custom.manufacturer = Some(0x1209);
+        // 0x30 is enum8.
+        custom.attributes = vec![(0x0001, "switchType".into(), 0x30)];
+        // A *cluster-specific* response, which is what actually requires the
+        // registration: an attribute report is a global command decoded by the
+        // type on the wire, so it would decode either way. Only a
+        // cluster-specific frame has to be looked up by cluster, and an
+        // unregistered one fails with `UnknownCluster`.
+        custom.responses = vec![(
+            0x00,
+            "alarmState".into(),
+            vec![("state".to_owned(), 0x20u8)],
+        )];
+
+        let mut definition = Definition::new("BMCT-RZ");
+        definition.match_rules.models = vec!["RBSH-MMR-ZB-EU".into()];
+        definition.extend = vec![
+            Extend::AddCustomCluster(custom),
+            Extend::Temperature(rszigbee_devices::NumericSpec::default()),
+        ];
+        let mut index = DefinitionIndex::new();
+        index.insert(definition).expect("insert");
+
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(
+            adapter,
+            events,
+            stored(SENSOR, "RBSH-MMR-ZB-EU", &[0x0000, 0xfca0]).await,
+        )
+        .definitions(index)
+        .interview_on_join(false)
+        .start()
+        .await
+        .expect("start");
+        let mut stream = zigbee.events();
+
+        // Frame control 0x09: cluster-specific, server to client. Command
+        // 0x00 with one uint8 parameter.
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0xfca0),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame: vec![0x09, 0x09, 0x00, 0x02],
+        }));
+
+        let name = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match stream.recv().await {
+                    Some(Event::ZclMessage(m)) if m.cluster == ClusterId(0xfca0) => match m.kind {
+                        crate::event::ZclMessageKind::Command { name, params, .. } => {
+                            assert_eq!(params.len(), 1, "the declared parameter decodes");
+                            return name;
+                        }
+                        other => panic!("expected a command, got {other:?}"),
+                    },
+                    Some(Event::UnparsedFrame {
+                        cluster: ClusterId(0xfca0),
+                        reason,
+                        ..
+                    }) => panic!("a registered custom cluster must decode, got {reason:?}"),
+                    Some(_) => {}
+                    None => panic!("the stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("an event should arrive");
+        assert_eq!(
+            name.as_deref(),
+            Some("alarmState"),
+            "the command name comes from the registered custom cluster"
+        );
+    }
+
     // ---- the sensor path: bind, configure reporting, report, StateChanged
 
     /// Drives an interview to completion against a scripted mock, so the

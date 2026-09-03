@@ -128,6 +128,14 @@ struct Task<A, S> {
 
 impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
     async fn run(mut self, outcome: StartOutcome) {
+        // Devices restored from the store were resolved before this process
+        // existed, so their custom clusters have to be registered again or
+        // their frames decode to nothing until they are re-interviewed.
+        let known: Vec<Ieee> = self.devices.all().map(|e| e.info.ieee).collect();
+        for ieee in known {
+            self.register_custom_clusters(ieee);
+        }
+
         self.persist_network_if_needed().await;
         self.emit(Event::Started { outcome });
 
@@ -956,6 +964,33 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         });
     }
 
+    /// Registers the manufacturer-specific clusters a device's definition
+    /// declares.
+    ///
+    /// Must happen before any frame from such a cluster is decoded: without
+    /// the registration its attributes have no known types, so the frame
+    /// decodes to nothing usable and the device looks like it reports
+    /// rubbish. Registered per device, because the same id means different
+    /// things to different manufacturers.
+    fn register_custom_clusters(&mut self, ieee: Ieee) {
+        let Some(definition) = self.resolve(ieee) else {
+            return;
+        };
+        let custom = definitions::custom_clusters(definition);
+        if custom.is_empty() {
+            return;
+        }
+        for def in custom {
+            debug!(
+                %ieee,
+                cluster = def.id.0,
+                name = %def.name,
+                "registering a manufacturer-specific cluster for this device"
+            );
+            self.registry.insert_for_device(ieee, def);
+        }
+    }
+
     /// Applies definition metadata that overrides what the device reported.
     ///
     /// Currently one thing, and it matters: `forcePowerSource` exists because
@@ -1278,6 +1313,9 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                 });
 
                 if matched {
+                    // Before anything else: a frame from a custom cluster
+                    // cannot be decoded until its types are known.
+                    self.register_custom_clusters(ieee);
                     self.apply_definition_metadata(ieee).await;
                 }
 

@@ -81,6 +81,7 @@ fn build(name: &str) -> Option<Extend> {
         "ForcePowerSource" => Extend::ForcePowerSource {
             source: rszigbee_devices::PowerSourceHint::Mains,
         },
+        "AddCustomCluster" => Extend::AddCustomCluster(rszigbee_devices::CustomCluster::default()),
         "Numeric" => Extend::Numeric {
             name: "x".into(),
             cluster: rszigbee_devices::reexport::ClusterId(0x0402),

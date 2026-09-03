@@ -9,13 +9,13 @@ Upstream definitions read: **4473**.
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| complete | 1167 | 26.1% | fully expressed as data |
-| approximate | 942 | 21.1% | works, with something named not expressed |
-| needs-primitive | 1252 | 28.0% | blocked only on named shared helpers |
-| needs-rust | 1015 | 22.7% | blocked on per-device code |
+| complete | 1193 | 26.7% | fully expressed as data |
+| approximate | 943 | 21.1% | works, with something named not expressed |
+| needs-primitive | 1206 | 27.0% | blocked only on named shared helpers |
+| needs-rust | 1034 | 23.1% | blocked on per-device code |
 | unsupported | 97 | 2.2% | upstream's own deprecated path |
 
-**Usable today: 2109 / 4473 = 47.1%.**
+**Usable today: 2136 / 4473 = 47.8%.**
 
 `complete` and `approximate` are reported separately and never merged. An
 approximation is a device that works with something missing — a Hue bulb whose
@@ -30,8 +30,7 @@ that mentions it, which is the eventual reach.
 
 | primitive | kind | sole | total |
 |---|---|---:|---:|
-| `m.deviceAddCustomCluster` | primitive | 22 | 146 |
-| `extend:non-call` | rust | 14 | 19 |
+| `extend:non-call` | rust | 15 | 19 |
 | `m.commandsLevelCtrl` | primitive | 12 | 81 |
 | `fz.ias_occupancy_alarm_1_with_timeout` | primitive | 12 | 13 |
 | `fromZigbee:local` | rust | 11 | 704 |
@@ -40,23 +39,24 @@ that mentions it, which is the eventual reach.
 | `configure:imperative` | rust | 10 | 103 |
 | `tz.on_off` | primitive | 9 | 200 |
 | `configure:not-a-function` | rust | 9 | 45 |
+| `m.pressure` | primitive | 8 | 26 |
 | `fz.ias_occupancy_alarm_2` | primitive | 8 | 11 |
 | `m.iasWarning` | primitive | 8 | 10 |
 | `m.skipDefaultResponse` | primitive | 8 | 10 |
 | `configure:bind-clusters-not-literal` | rust | 7 | 102 |
+| `m.numeric:non-literal-args` | rust | 6 | 60 |
 | `e.smoke` | primitive | 6 | 29 |
+| `m.commandsWindowCovering` | primitive | 6 | 24 |
 | `e.gas` | primitive | 6 | 24 |
 | `m.thermostat` | primitive | 6 | 15 |
-| `m.numeric:non-literal-args` | rust | 5 | 114 |
-| `m.enumLookup:non-literal-args` | rust | 5 | 77 |
-| `m.pressure` | primitive | 5 | 26 |
-| `m.commandsWindowCovering` | primitive | 5 | 24 |
 | `sunricher.extend.minimumPWM` | primitive | 5 | 14 |
 | `configure:device.getEndpoint(1).saveClusterAttributeKeyValue` | primitive | 5 | 9 |
 | `tuya.valueConverterBasic.lookup({none: tuya.enum(0), low: tuya.enum(1), high: tuya.enum(2)})` | primitive | 5 | 8 |
 | `gledoptoConfigureReadModelID` | primitive | 5 | 5 |
 | `m.lock` | primitive | 5 | 5 |
 | `tuya.exposes.switch` | primitive | 4 | 38 |
+| `m.enumLookup:non-literal-args` | rust | 4 | 29 |
+| `m.bindCluster` | primitive | 4 | 26 |
 | `fz.ias_contact_alarm_1_report` | primitive | 4 | 11 |
 | `tuya.modernExtend.electricityMeasurementPoll` | primitive | 4 | 11 |
 | `m.deviceTemperature` | primitive | 4 | 9 |

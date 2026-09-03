@@ -1,5 +1,6 @@
 {
  "extends": [
+  "AddCustomCluster",
   "Battery",
   "Binary",
   "Co2",
