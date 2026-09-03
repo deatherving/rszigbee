@@ -122,9 +122,37 @@ pub enum RuntimeError {
     #[error("no device with address {0}")]
     UnknownDevice(Ieee),
 
+    /// A device refused an attribute read.
+    ///
+    /// Distinct from a timeout: the device answered, and said no. A caller can
+    /// act on that — the attribute is unsupported, or needs a manufacturer
+    /// code — where a timeout only says to try again.
+    #[error("{ieee} refused the read with ZCL status 0x{status:02x}")]
+    ReadRefused {
+        /// Which device.
+        ieee: Ieee,
+        /// The ZCL status byte it answered with.
+        status: u8,
+    },
+
     /// A device did not answer a ZDO request in time.
     #[error("no ZDO response from {ieee} within {timeout:?}")]
     ZdoTimeout {
+        /// Which device.
+        ieee: Ieee,
+        /// How long was allowed.
+        timeout: Duration,
+    },
+
+    /// A device did not answer an attribute read in time.
+    ///
+    /// Separate from [`RuntimeError::ZdoTimeout`] because the two say different
+    /// things about a device: ZDO is answered by the stack, so silence there
+    /// suggests the device is gone, while a ZCL read is answered by the
+    /// application on it. Reporting a ZCL timeout as a ZDO one sent a reader
+    /// looking in the wrong layer.
+    #[error("no ZCL response from {ieee} within {timeout:?}")]
+    ZclTimeout {
         /// Which device.
         ieee: Ieee,
         /// How long was allowed.

@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 
 use super::Task;
 use crate::adapter::CoordinatorAdapter;
-use crate::device::{InterviewState, PowerSource};
+use crate::device::{DeviceKind, InterviewState, PowerSource};
 use crate::event::{Event, LastSeenReason, LeaveReason};
 use crate::runtime::definitions;
 use crate::runtime::inventory;
@@ -70,6 +70,33 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             ieee,
             reason: LeaveReason::Unknown,
         });
+    }
+
+    /// Puts the coordinator in the device table.
+    ///
+    /// The coordinator is a Zigbee node like any other — it sits at
+    /// `nwk 0x0000`, hosts `genBasic`, and answers ZDO. Without a record for
+    /// it, [`super::super::Zigbee::devices`] omits the one device an operator
+    /// is most certain exists, and every request addressed to it comes back
+    /// `UnknownDevice`, so it cannot be read or interviewed through the
+    /// runtime at all. zigbee-herdsman creates the same record for the same
+    /// reason.
+    ///
+    /// Derived fresh on every start rather than persisted. Its identity comes
+    /// from the adapter each time, so a stored copy could only ever be stale —
+    /// and stale is exactly what it would be after the dongle was swapped.
+    pub(super) fn register_coordinator(&mut self) {
+        if self.devices.get(self.coordinator).is_some() {
+            return;
+        }
+        let mut entry = inventory::new_entry(self.coordinator, Nwk::COORDINATOR, SystemTime::now());
+        entry.info.kind = DeviceKind::Coordinator;
+        // Mains by definition: it is the thing the network is plugged into.
+        // This also keeps the availability policy from ever probing it.
+        entry.info.power_source = PowerSource::Mains;
+        entry.reachability.is_sleepy = false;
+        debug!(coordinator = %self.coordinator, "registered the coordinator as a device");
+        self.devices.insert(entry);
     }
 
     /// Resolves the definition for a device from what the interview learned.

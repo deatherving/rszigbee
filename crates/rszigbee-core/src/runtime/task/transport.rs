@@ -155,7 +155,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             .collect();
         for key in stale {
             if let Some(pending) = self.pending_zcl.remove(&key) {
-                let _ = pending.reply.send(Err(RuntimeError::ZdoTimeout {
+                let _ = pending.reply.send(Err(RuntimeError::ZclTimeout {
                     ieee: pending.ieee,
                     timeout: ZDO_TIMEOUT,
                 }));

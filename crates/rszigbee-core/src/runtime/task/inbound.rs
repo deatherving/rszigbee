@@ -16,8 +16,52 @@ use tracing::debug;
 use super::Task;
 use crate::adapter::CoordinatorAdapter;
 use crate::event::{Event, LastSeenReason};
-use crate::runtime::{decode, definitions, tuya};
+use crate::runtime::{RuntimeError, decode, definitions, tuya};
 use crate::store::ZigbeeStore;
+
+/// How a frame answers an outstanding attribute read, if it does.
+enum ReadAnswer {
+    /// A `readAttributesResponse`, carrying values.
+    Attributes,
+    /// A `defaultResponse` with a non-zero status: the device refused.
+    Refused(u8),
+}
+
+impl ReadAnswer {
+    /// `readAttributesResponse`.
+    const READ_RESPONSE: u8 = 0x01;
+    /// `defaultResponse`.
+    const DEFAULT_RESPONSE: u8 = 0x0b;
+
+    /// Classifies a frame, or `None` if it does not answer a read at all.
+    fn of(frame: &rszigbee_spec::zcl::frame::ZclFrame<'_>) -> Option<Self> {
+        use rszigbee_spec::zcl::frame::{Direction, FrameType};
+
+        // Outbound frames are never answers. This alone is what stops the
+        // coordinator's own looped-back request from resolving its own read.
+        if frame.header.direction != Direction::ServerToClient {
+            return None;
+        }
+        // A read is a foundation command, so its answer is one too. A
+        // cluster-specific frame that happens to share the sequence is not it.
+        if frame.header.frame_type != FrameType::Global {
+            return None;
+        }
+        match frame.header.command.0 {
+            Self::READ_RESPONSE => Some(Self::Attributes),
+            Self::DEFAULT_RESPONSE => {
+                // Status is the second payload byte, after the command being
+                // responded to. A success default response is not an answer to
+                // a read, so it is left to the normal inbound path.
+                match frame.payload {
+                    [_, status, ..] if *status != 0 => Some(Self::Refused(*status)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
 
 impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
     /// Which endpoint to report an event against, if any.
@@ -64,17 +108,37 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         // A frame carrying the transaction sequence of an outstanding read is
         // that read's answer. Checked before the report path, so a read does
         // not also surface as an unsolicited attribute report.
+        // A frame carrying the transaction sequence of an outstanding read may
+        // be that read's answer — but a sequence number alone is not enough to
+        // decide, and treating it as enough was a real bug found on hardware.
+        //
+        // EmberZNet loops a unicast addressed to the coordinator's own node id
+        // back to the local application, so our *own* request arrived carrying
+        // our own sequence and resolved the read with nothing. The general case
+        // is worse: the sequence is a single byte, so it wraps every 256
+        // transactions and any unrelated frame reusing one would resolve a
+        // pending read with whatever it happened to contain.
+        //
+        // So a response has to look like one: sent server-to-client, and
+        // carrying a command that answers a read.
         if let Ok(frame) = rszigbee_spec::zcl::frame::ZclFrame::decode(&rx.frame)
+            && let Some(answer) = ReadAnswer::of(&frame)
             && let Some(pending) = self.pending_zcl.remove(&(rx.cluster, frame.header.tsn))
         {
-            let decoded = decode::zcl_message(&self.registry, ieee, &rx)
-                .ok()
-                .and_then(|m| match m.kind {
-                    crate::event::ZclMessageKind::Attributes(a) => Some(a),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let _ = pending.reply.send(Ok(decoded));
+            let result = match answer {
+                ReadAnswer::Attributes => Ok(decode::zcl_message(&self.registry, ieee, &rx)
+                    .ok()
+                    .and_then(|m| match m.kind {
+                        crate::event::ZclMessageKind::Attributes(a) => Some(a),
+                        _ => None,
+                    })
+                    .unwrap_or_default()),
+                // The device answered and said no. Reported as a refusal
+                // rather than an empty result, because "unsupported" and "no
+                // values" are different things to a caller.
+                ReadAnswer::Refused(status) => Err(RuntimeError::ReadRefused { ieee, status }),
+            };
+            let _ = pending.reply.send(result);
             self.touch(ieee, SystemTime::now(), LastSeenReason::Message);
             return;
         }

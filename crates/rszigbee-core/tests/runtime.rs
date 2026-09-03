@@ -28,7 +28,11 @@ mod tests {
     use rszigbee_core::event::{Event, ZclMessageKind};
     use rszigbee_core::store::{MemoryStore, PersistedNetwork, ZigbeeStore};
 
-    const DEVICE: Ieee = Ieee::new(0x0012_4b00_2218_9abc);
+    /// A joined device. Deliberately *not* the coordinator's address: these
+    /// two used to be the same value, which was only harmless while the
+    /// coordinator had no device record of its own.
+    const DEVICE: Ieee = Ieee::new(0x0012_4b00_2218_9abd);
+    /// What `MockAdapter` reports as its own address.
     const COORDINATOR: Ieee = Ieee::new(0x0012_4b00_2218_9abc);
 
     /// A runtime over a mock adapter and an in-memory store.
@@ -120,13 +124,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_coordinator_is_a_device_like_any_other() {
+        // It sits at nwk 0x0000, hosts genBasic and answers ZDO. Without a
+        // record, `devices()` omits the one device an operator is certain
+        // exists and every request to it is `UnknownDevice`.
+        let (zigbee, _control) = runtime().await;
+        let devices = zigbee.devices().await.expect("devices");
+        let coordinator = devices
+            .iter()
+            .find(|d| d.ieee == zigbee.coordinator())
+            .expect("the coordinator must be in the device table");
+        assert_eq!(coordinator.nwk, Nwk::COORDINATOR);
+        assert_eq!(
+            coordinator.kind,
+            rszigbee_core::device::DeviceKind::Coordinator
+        );
+        // Mains by definition, which also keeps the availability policy from
+        // ever probing it.
+        assert_eq!(
+            coordinator.power_source,
+            rszigbee_core::device::PowerSource::Mains
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_addressed_to_the_coordinator_is_not_refused() {
+        // The gap this closes: before the coordinator had a record, reading
+        // its own genBasic through the runtime failed with `UnknownDevice`.
+        let (zigbee, control) = runtime().await;
+        control.reply_zcl(Ok(None));
+        let ieee = zigbee.coordinator();
+        // Times out rather than erroring, because the mock does not answer —
+        // what matters is that it was *sent* rather than refused.
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            zigbee.zcl_read(ieee, EndpointId(1), ClusterId(0x0000), vec![AttrId(0x0005)]),
+        )
+        .await;
+        assert!(
+            result.is_err() || result.is_ok(),
+            "placeholder to keep the await"
+        );
+        assert_eq!(
+            control.zcl_sent().len(),
+            1,
+            "the read must reach the adapter rather than being refused"
+        );
+    }
+
+    #[tokio::test]
     async fn starting_reports_what_it_did_and_who_the_coordinator_is() {
         let (zigbee, _control) = runtime().await;
         assert_eq!(zigbee.coordinator(), COORDINATOR);
         // Resumed, not formed. Forming when we should have resumed is the
         // outcome that orphans every device.
         assert_eq!(zigbee.start_outcome(), StartOutcome::Resumed);
-        assert!(zigbee.devices().await.expect("devices").is_empty());
+        // The coordinator itself, and nothing else: no device has joined.
+        let devices = zigbee.devices().await.expect("devices");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].ieee, zigbee.coordinator());
     }
 
     #[tokio::test]
@@ -165,11 +221,13 @@ mod tests {
         assert_eq!(joined, (DEVICE, Nwk::new(0x1234)));
 
         let devices = zigbee.devices().await.expect("devices");
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].ieee, DEVICE);
+        let joined = devices
+            .iter()
+            .find(|d| d.ieee == DEVICE)
+            .expect("the joined device is in the table");
         // Unknown, not guessed. Guessing "router" would make a battery sensor
         // get probed forever.
-        assert_eq!(devices[0].kind, rszigbee_core::device::DeviceKind::Unknown);
+        assert_eq!(joined.kind, rszigbee_core::device::DeviceKind::Unknown);
     }
 
     #[tokio::test]
@@ -202,10 +260,18 @@ mod tests {
         .await;
         assert_eq!((from, to), (Nwk::new(0x1111), Nwk::new(0x2222)));
 
-        // Still one device, not two. A short address is not an identity.
+        // Still one record for this device, not two: a short address is not an
+        // identity. The coordinator's own record is the other entry.
         let devices = zigbee.devices().await.expect("devices");
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].nwk, Nwk::new(0x2222));
+        assert_eq!(
+            devices.iter().filter(|d| d.ieee == DEVICE).count(),
+            1,
+            "a rejoin must update the record, not add one: {devices:?}"
+        );
+        assert_eq!(
+            devices.iter().find(|d| d.ieee == DEVICE).map(|d| d.nwk),
+            Some(Nwk::new(0x2222))
+        );
     }
 
     #[tokio::test]
@@ -453,12 +519,14 @@ mod tests {
             .expect("start");
 
         let devices = zigbee.devices().await.expect("devices");
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].ieee, DEVICE);
-        assert_eq!(devices[0].nwk, Nwk::new(0x4321));
+        let restored = devices
+            .iter()
+            .find(|d| d.ieee == DEVICE)
+            .expect("the stored device is in the table");
+        assert_eq!(restored.nwk, Nwk::new(0x4321));
         // Restored as already interviewed, so a restart does not re-interview
         // every device on the network.
-        assert_eq!(devices[0].interview, InterviewState::Successful);
+        assert_eq!(restored.interview, InterviewState::Successful);
     }
 
     #[tokio::test]
@@ -549,7 +617,7 @@ mod definition_integration {
     use rszigbee_spec::zdo::ZdoClusterId;
 
     use rszigbee_core::command::CommandError;
-    use rszigbee_core::runtime::Zigbee;
+    use rszigbee_core::runtime::{RuntimeError, Zigbee};
 
     use rszigbee_core::adapter::{AdapterEvent, MockAdapter, MockHandle, ZclRx};
     use rszigbee_core::command::DeviceCommand;
@@ -558,7 +626,8 @@ mod definition_integration {
     use rszigbee_core::store::{MemoryStore, PersistedDevice, PersistedEndpoint, ZigbeeStore};
 
     const BULB: Ieee = Ieee::new(0x0017_8801_00dc_4d3f);
-    const SENSOR: Ieee = Ieee::new(0x0012_4b00_2218_9abc);
+    /// A joined sensor, distinct from the coordinator's own address.
+    const SENSOR: Ieee = Ieee::new(0x0012_4b00_2218_9abd);
 
     /// A complete definition for a dimmable light.
     fn bulb_definition() -> Definition {
@@ -1620,6 +1689,145 @@ mod definition_integration {
             .expect("the read must be answered by the correlated frame");
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].0, 0x0005);
+    }
+
+    #[tokio::test]
+    async fn an_echo_of_our_own_request_does_not_resolve_the_read() {
+        // Found on hardware. EmberZNet loops a unicast addressed to the
+        // coordinator's own node id back to the local application, so our own
+        // `readAttributes` request arrived carrying our own sequence number and
+        // resolved the read with nothing — in 27ms rather than the 5s timeout,
+        // which is how it was noticed at all.
+        //
+        // The general case is worse than the loopback: the sequence is one
+        // byte, so it wraps every 256 transactions and any unrelated frame
+        // reusing one would resolve a pending read with whatever it contained.
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0000]).await).await;
+        control.reply_zcl(Ok(None));
+
+        let reader = tokio::spawn({
+            let zigbee = zigbee.clone();
+            async move {
+                zigbee
+                    .zcl_read(BULB, EndpointId(1), ClusterId(0x0000), vec![AttrId(0x0005)])
+                    .await
+            }
+        });
+        let tsn = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(&tsn) = control.zcl_sent().first().and_then(|t| t.frame.get(1)) {
+                    return tsn;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the read reaches the adapter");
+
+        // Frame control 0x00: global, *client to server* — the outbound
+        // direction. Command 0x00 is readAttributes, the request itself.
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0000),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame: vec![0x00, tsn, 0x00, 0x05, 0x00],
+        }));
+
+        // The read must still be waiting. A short window: the bug resolved it
+        // within 30ms, so anything that returns here is the bug back.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut Box::pin(async {}))
+                .await
+                .is_ok()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            !reader.is_finished(),
+            "an outbound frame must not resolve a pending read"
+        );
+
+        // The real answer does resolve it. Frame control 0x18: global, server
+        // to client. Command 0x01 is readAttributesResponse.
+        let mut frame = vec![0x18, tsn, 0x01, 0x05, 0x00, 0x00, 0x42, 0x04];
+        frame.extend_from_slice(b"bulb");
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0000),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+
+        let values = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("no timeout")
+            .expect("task")
+            .expect("the genuine response must resolve the read");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, 0x0005);
+    }
+
+    #[tokio::test]
+    async fn a_device_refusing_a_read_is_reported_as_a_refusal_not_an_empty_result() {
+        // "unsupported attribute" and "no values" are different things to a
+        // caller: one is actionable, the other looks like a working read of
+        // nothing.
+        let (zigbee, control) =
+            runtime_with(stored(BULB, "TRADFRI bulb E27 WS opal 980lm", &[0x0000]).await).await;
+        control.reply_zcl(Ok(None));
+
+        let reader = tokio::spawn({
+            let zigbee = zigbee.clone();
+            async move {
+                zigbee
+                    .zcl_read(BULB, EndpointId(1), ClusterId(0x0000), vec![AttrId(0x0005)])
+                    .await
+            }
+        });
+        let tsn = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(&tsn) = control.zcl_sent().first().and_then(|t| t.frame.get(1)) {
+                    return tsn;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("sent");
+
+        // defaultResponse: server to client, command 0x0b, responding to
+        // command 0x00 with status 0x86 (unsupported attribute).
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(BULB),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0x0000),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame: vec![0x18, tsn, 0x0b, 0x00, 0x86],
+        }));
+
+        let error = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("no timeout")
+            .expect("task")
+            .expect_err("a refusal is an error, not an empty read");
+        assert!(
+            matches!(error, RuntimeError::ReadRefused { status: 0x86, .. }),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

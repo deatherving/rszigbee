@@ -48,3 +48,7 @@ required-features = ["ember"]
 [[example]]
 name = "ember_selftest"
 required-features = ["ember", "file-store"]
+
+[[example]]
+name = "ember_runtime"
+required-features = ["ember", "file-store"]

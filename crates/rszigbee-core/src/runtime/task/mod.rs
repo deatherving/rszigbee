@@ -136,6 +136,8 @@ mod transport;
 
 impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
     pub(super) async fn run(mut self, outcome: StartOutcome) {
+        self.register_coordinator();
+
         // Devices restored from the store were resolved before this process
         // existed, so their custom clusters have to be registered again or
         // their frames decode to nothing until they are re-interviewed.
