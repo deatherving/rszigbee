@@ -144,6 +144,7 @@ pub mod hex_u64 {
 
 /// Why an IEEE address string could not be parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ParseIeeeError {
     /// Wrong number of hex digits after the optional `0x`.
     #[error("expected 16 hex digits, got {0}")]

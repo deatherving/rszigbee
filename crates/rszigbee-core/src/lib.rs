@@ -1,9 +1,9 @@
 //! The rszigbee runtime model.
 //!
 //! This crate holds the typed device, event, command, capability, state,
-//! reachability and persistence model that both operating modes share. Phase 1
-//! establishes the types and the boundaries; the runtime task that drives them
-//! lands with the Phase 2 vertical slice.
+//! reachability and persistence model that both operating modes share, and the
+//! [`runtime`] that drives them — one task owning the coordinator, and a
+//! cloneable handle onto it.
 //!
 //! # Boundaries this crate enforces
 //!
@@ -27,6 +27,7 @@
 //! | [`command`] | everything the runtime accepts |
 //! | [`reachability`] | reachability facts and the policy seam |
 //! | [`store`] | persistence traits and an in-memory backend |
+//! | [`runtime`] | the task that owns the adapter, and the handle onto it |
 
 #![forbid(unsafe_code)]
 
@@ -51,7 +52,10 @@ pub use reachability::{
     Assessment, NextCheck, ProbeResult, Reachability, ReachabilityContext, ReachabilityInfo,
     ReachabilityPolicy, SilencePolicy,
 };
-pub use runtime::{EventStream, InterviewOutcome, RuntimeError, Zigbee, ZigbeeBuilder};
+pub use runtime::{
+    BehaviorRegistry, ConfigureContext, DecodeContext, DeviceBehavior, EncodeContext, EventStream,
+    InterviewOutcome, Outcome, RuntimeError, Zigbee, ZigbeeBuilder,
+};
 pub use state::{Priority, StateChanges, StateSnapshot, StateValue};
 #[cfg(feature = "file-store")]
 pub use store::FileStore;

@@ -101,6 +101,7 @@ pub struct Pending<K: Eq + Hash + Clone + core::fmt::Debug, V> {
 
 /// Why a wait ended without a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum WaitError {
     /// The registration was replaced or the correlator was dropped.
     #[error("the pending request was cancelled")]

@@ -60,7 +60,7 @@ The runtime consumes definitions, in both directions:
 
 No MQTT layer, no Home Assistant discovery.
 
-254 tests, none of which need hardware.
+341 tests, none of which need hardware.
 
 ## Crates
 
@@ -97,8 +97,9 @@ while let Some(event) = events.recv().await {
 
 ## Boundaries
 
-Three rules hold the design together, and all three are **checked in CI** by
-`scripts/check-boundaries.sh` rather than left to discipline:
+The rules that hold the design together are **checked in CI** by
+`scripts/check-boundaries.sh` rather than left to discipline. Six checks run;
+these are the three that matter most:
 
 1. **`rszigbee-core` does not know EZSP exists.** Only
    `rszigbee-adapter-ember` depends on `ezsp`, `ashv2` or a serial port. Adding
@@ -108,6 +109,10 @@ Three rules hold the design together, and all three are **checked in CI** by
    caller using only `MemoryStore` links no JSON parser.
 3. **`rszigbee-spec` is sans-IO.** No tokio, no serial, no I/O. That is what
    makes the codecs cheap to test and to fuzz.
+
+The other three keep `rszigbee-devices` from depending on the runtime (so
+definitions stay data the runtime interprets, not the reverse), keep
+`ZigbeeStore` to Zigbee domain state, and keep the workspace free of `unsafe`.
 
 Each rule has a negative control — deliberately breaking it makes the check
 fail and name the offending crate.
@@ -206,11 +211,20 @@ scheduling, one task owns it and `Zigbee` is a cheap clone that asks. Interviews
 run *outside* that loop: a ZDO response arrives as an adapter event, so awaiting
 one inside the loop would deadlock on a message only the loop can deliver.
 
-**The three traits carry a conformance suite, not just a signature.**
-`ZigbeeStore` has two backends, and `store::conformance` asserts the promises
+**Four extension points, and each is exercised by a test rather than only
+declared.** `CoordinatorAdapter` (the radio), `ZigbeeStore` (persistence),
+`ReachabilityPolicy` (when a device counts as gone) and `DeviceBehavior`
+(behaviour a definition cannot express). The adapter is the odd one out and
+deliberately: it is one serial port with one framing state machine, so it is
+owned exclusively by the runtime task and is *not* `Sync` — concurrent use is a
+compile error rather than a rule in a comment.
+
+`ZigbeeStore` has two backends, so `store::conformance` asserts the promises
 callers rely on — upsert updates in place, deleting something absent succeeds,
 a backup is never overwritten — against both. Two implementations tested only
-separately are two implementations free to drift apart.
+separately are two implementations free to drift apart. The other three each
+have a test that injects one and checks the runtime actually consults it; an
+extension point with no test is an extension point that might not be wired up.
 
 ## Development
 

@@ -122,12 +122,6 @@ impl EndpointInfo {
     pub fn has_input(&self, cluster: ClusterId) -> bool {
         self.input_clusters.contains(&cluster)
     }
-
-    /// True when this endpoint sends the cluster as a client.
-    #[must_use]
-    pub fn has_output(&self, cluster: ClusterId) -> bool {
-        self.output_clusters.contains(&cluster)
-    }
 }
 
 /// A snapshot of one device.

@@ -25,6 +25,24 @@
 //! the Ember adapter does, and the [`CoordinatorAdapter`] trait is the seam.
 //! `scripts/check-boundaries.sh` fails the build if that stops being true.
 //!
+//! # The four extension points
+//!
+//! Everything a caller can replace or add to goes through one of these, and
+//! they are all exported at the crate root rather than buried at different
+//! depths:
+//!
+//! | trait | replaces | bounds |
+//! |---|---|---|
+//! | [`CoordinatorAdapter`] | the radio | `Send + 'static` |
+//! | [`ZigbeeStore`] | persistence | `Send + Sync + 'static` |
+//! | [`ReachabilityPolicy`] | when to consider a device gone | `Send + Sync + 'static` |
+//! | [`DeviceBehavior`] | behaviour a definition cannot express | `Send + Sync + 'static` |
+//!
+//! The adapter is the odd one out, and deliberately: it is one serial port with
+//! one framing state machine, so it is owned exclusively by the runtime task
+//! and its methods take `&mut self`. Not being `Sync` makes concurrent use a
+//! compile error rather than a rule in a comment.
+//!
 //! # Status
 //!
 //! Early. The runtime, the codecs, persistence and the Ember adapter's
@@ -116,6 +134,13 @@ pub use rszigbee_core::{
     Brightness, Capability, CapabilityId, CommandError, DeviceCommand, DeviceInfo, Event,
     EventStream, InterviewOutcome, MemoryStore, PersistedDevice, PersistedNetwork, Reachability,
     RuntimeError, StateChanges, StateValue, StoreError, Zigbee, ZigbeeBuilder, ZigbeeStore,
+};
+// The four extension points, together and equally reachable. Two of them used
+// to be a module path deeper than the others for no reason a caller could see,
+// which made the escape hatch and the availability policy look like internals
+// rather than the seams they are.
+pub use rszigbee_core::{
+    ConfigureContext, DecodeContext, DeviceBehavior, EncodeContext, Outcome, ReachabilityPolicy,
 };
 pub use rszigbee_devices::{Definition, DefinitionIndex, DeviceMatch};
 pub use rszigbee_spec::ids::{ClusterId, EndpointId, GroupId, Ieee, Nwk};

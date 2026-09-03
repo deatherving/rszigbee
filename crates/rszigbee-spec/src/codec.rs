@@ -15,6 +15,7 @@ use core::fmt;
 
 /// Why a read or write failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum CodecError {
     /// The buffer ended before the requested number of bytes.
     #[error(

@@ -316,6 +316,7 @@ fn read_cluster_list(r: &mut Reader<'_>, what: &'static str) -> Result<Vec<Clust
 
 /// Why a ZDO response could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ZdoError {
     /// The response decoded but reported a non-success status.
     ///

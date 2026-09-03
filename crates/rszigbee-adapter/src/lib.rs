@@ -217,6 +217,17 @@ pub enum AdapterEvent {
 /// receivers reflect that the adapter lives inside the runtime's task: exactly
 /// one caller drives it, and fan-out is the runtime's business.
 #[allow(async_fn_in_trait)]
+/// The seam every coordinator family sits behind.
+///
+/// # Why this one is not `Sync`
+///
+/// The other extension points in rszigbee — the store, the availability policy,
+/// a device behaviour — are `Send + Sync + 'static`, because several tasks may
+/// hold them at once. An adapter is deliberately different: it is one serial
+/// port with one framing state machine, so concurrent use is a protocol
+/// violation rather than a performance question. Exactly one task owns it and
+/// every method takes `&mut self`, which makes that ownership a compile error
+/// to violate rather than a rule in a comment.
 pub trait CoordinatorAdapter: Send + 'static {
     /// Brings the transport and the network up.
     ///

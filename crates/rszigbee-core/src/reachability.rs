@@ -188,7 +188,7 @@ pub enum NextCheck {
 }
 
 /// Decides when to look and what to conclude.
-pub trait ReachabilityPolicy: Send + Sync {
+pub trait ReachabilityPolicy: Send + Sync + 'static {
     /// Called on every relevant fact change and at the scheduled time.
     fn assess(&self, ctx: &ReachabilityContext<'_>) -> Assessment;
 }

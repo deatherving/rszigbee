@@ -259,7 +259,6 @@ struct MemoryInner {
     devices: BTreeMap<Ieee, PersistedDevice>,
     groups: BTreeMap<u16, PersistedGroup>,
     backups: Vec<(BackupMeta, Vec<u8>)>,
-    flushes: usize,
 }
 
 impl MemoryStore {
@@ -267,13 +266,6 @@ impl MemoryStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// How many times `flush` has been called. Lets a test assert that
-    /// lifecycle changes were written through rather than left buffered.
-    #[must_use]
-    pub fn flush_count(&self) -> usize {
-        self.inner.lock().map_or(0, |i| i.flushes)
     }
 
     fn with<T>(&self, f: impl FnOnce(&mut MemoryInner) -> T) -> Result<T, StoreError> {
@@ -370,7 +362,10 @@ impl ZigbeeStore for MemoryStore {
     }
 
     async fn flush(&self) -> Result<(), StoreError> {
-        self.with(|i| i.flushes += 1)
+        // Nothing is buffered: every method writes straight into the map
+        // behind the mutex. A no-op rather than a counter, because the counter
+        // it used to keep was never read by anything.
+        Ok(())
     }
 }
 
