@@ -46,6 +46,7 @@ extern crate alloc;
 
 pub mod codec;
 pub mod ids;
+pub mod tuya;
 pub mod zcl;
 pub mod zdo;
 

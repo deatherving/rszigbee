@@ -52,6 +52,7 @@ mod encode;
 mod interview;
 mod inventory;
 mod task;
+mod tuya;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -1765,6 +1766,190 @@ mod definition_integration {
             saw_raw,
             "the frame must still surface, or nobody can model the attribute"
         );
+    }
+
+    // ---- the Tuya path, end to end
+
+    /// A Tuya soil sensor: temperature and moisture on datapoints.
+    fn tuya_definition() -> Definition {
+        let mut d = Definition::new("TS0601_soil");
+        d.match_rules.fingerprints = vec![{
+            let mut fp = rszigbee_devices::Fingerprint::default();
+            fp.model_id = Some("TS0601".into());
+            fp.manufacturer_name = Some("_TZE200_myd45weu".into());
+            fp
+        }];
+        d.extend = vec![Extend::TuyaBase {
+            datapoints: true,
+            query_on_announce: false,
+            query_interval_secs: None,
+        }];
+        let mut tenths = rszigbee_devices::NumericSpec::default();
+        tenths.divisor = 10;
+        d.tuya_datapoints = vec![
+            rszigbee_devices::TuyaDatapoint::new(
+                3,
+                "soil_moisture",
+                rszigbee_devices::TuyaKind::Value(rszigbee_devices::NumericSpec::default()),
+            ),
+            rszigbee_devices::TuyaDatapoint::new(
+                5,
+                "temperature",
+                rszigbee_devices::TuyaKind::Value(tenths),
+            ),
+            rszigbee_devices::TuyaDatapoint::new(
+                1,
+                "state",
+                rszigbee_devices::TuyaKind::Bool { inverted: false },
+            )
+            .writable(),
+        ];
+        d
+    }
+
+    /// A store holding a Tuya device that has been interviewed.
+    async fn tuya_store() -> MemoryStore {
+        let store = MemoryStore::new();
+        let mut device = PersistedDevice::new(SENSOR, Nwk::new(0x1234));
+        device.interview = InterviewState::Successful;
+        device.basic.model_id = Some("TS0601".into());
+        device.basic.manufacturer_name = Some("_TZE200_myd45weu".into());
+        device.endpoints = vec![PersistedEndpoint {
+            id: EndpointId(1),
+            profile: rszigbee_spec::ids::ProfileId::HA,
+            device_id: 0x0051,
+            input_clusters: vec![ClusterId(0x0000), ClusterId(0xef00)],
+            output_clusters: Vec::new(),
+        }];
+        store.upsert_device(&device).await.expect("upsert");
+        store
+    }
+
+    async fn tuya_runtime() -> (Zigbee, MockHandle) {
+        let mut index = DefinitionIndex::new();
+        index.insert(tuya_definition()).expect("insert");
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, tuya_store().await)
+            .definitions(index)
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        (zigbee, control)
+    }
+
+    #[tokio::test]
+    async fn a_tuya_datapoint_report_becomes_typed_state() {
+        // The whole Tuya read path: a manufacturer-cluster frame carrying two
+        // datapoints becomes two scaled capabilities. Nothing in the standard
+        // attribute path would ever see this frame.
+        let (zigbee, control) = tuya_runtime().await;
+        let mut stream = zigbee.events();
+
+        // dataReport (command 0x02) with dp 5 = 213 tenths and dp 3 = 42.
+        let mut payload = vec![0x00, 0x01];
+        payload.extend_from_slice(&[0x05, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0xd5]);
+        payload.extend_from_slice(&[0x03, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x2a]);
+        let mut frame = vec![0x09, 0x11, 0x02];
+        frame.extend_from_slice(&payload);
+
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0xef00),
+            group: None,
+            was_broadcast: false,
+            link_quality: Some(160),
+            frame,
+        }));
+
+        let changes = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match stream.recv().await {
+                    Some(Event::StateChanged { changes, .. }) => return changes,
+                    Some(_) => {}
+                    None => panic!("the stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("a Tuya report must produce state");
+
+        assert_eq!(
+            changes
+                .get(&crate::capability::CapabilityId::from("temperature"))
+                .and_then(crate::state::StateValue::as_f64),
+            Some(21.3),
+            "the table's divisor is what makes 213 mean 21.3"
+        );
+        assert_eq!(
+            changes
+                .get(&crate::capability::CapabilityId::from("soil_moisture"))
+                .and_then(crate::state::StateValue::as_f64),
+            Some(42.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_to_a_tuya_device_becomes_a_data_request() {
+        let (zigbee, control) = tuya_runtime().await;
+        control.reply_zcl(Ok(None));
+
+        zigbee
+            .send(SENSOR, DeviceCommand::SetOn(true))
+            .await
+            .expect("the table declares a writable state datapoint");
+
+        let sent = control.zcl_sent();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(
+            sent[0].cluster,
+            ClusterId(0xef00),
+            "a Tuya device is addressed through its manufacturer cluster, not genOnOff"
+        );
+        // Frame: control, tsn, command 0x00 (dataRequest), then seq and the
+        // datapoint. dp 1, type 1 (bool), length 1, value 1.
+        assert_eq!(sent[0].frame.get(2), Some(&0x00), "dataRequest");
+        let payload = &sent[0].frame[3..];
+        assert_eq!(payload[2], 0x01, "datapoint 1");
+        assert_eq!(payload[3], 0x01, "bool");
+        assert_eq!(payload[6], 0x01, "true");
+    }
+
+    #[tokio::test]
+    async fn an_unmodelled_datapoint_produces_no_state() {
+        // Guessing would attach the value to whatever capability shared its
+        // number, and the result reads like a plausible measurement.
+        let (zigbee, control) = tuya_runtime().await;
+        let mut stream = zigbee.events();
+
+        // dp 99, which the table does not name.
+        let mut frame = vec![0x09, 0x12, 0x02, 0x00, 0x01];
+        frame.extend_from_slice(&[0x63, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0xef00),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(40), stream.recv()).await {
+                Ok(Some(Event::StateChanged { changes, .. })) => {
+                    panic!("an unmodelled datapoint must not invent state: {changes:?}")
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
     }
 
     // ---- the read path, which is what makes a model string exist at all

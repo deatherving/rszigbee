@@ -259,6 +259,19 @@ pub enum Extend {
         endpoints: Vec<EndpointId>,
     },
 
+    /// The device *sends* level-control commands.
+    ///
+    /// A dimmer remote or a rotary knob. Like [`Extend::CommandsOnOff`] this is
+    /// a source of actions rather than something to be commanded, and the
+    /// direction lives in the command payload rather than the command id — a
+    /// `move` is up or down depending on its first parameter.
+    CommandsLevelCtrl {
+        /// Which actions to surface.
+        commands: Vec<String>,
+        /// Endpoint names, when the device has several controls.
+        endpoints: Vec<EndpointId>,
+    },
+
     /// Overrides what the device says its power source is.
     ///
     /// Pure metadata, and it decides whether the device is ever probed: a
@@ -444,6 +457,36 @@ pub struct TuyaDatapoint {
     pub endpoint: Option<EndpointId>,
     /// Whether it can be written.
     pub access: Access,
+}
+
+impl TuyaDatapoint {
+    /// A read-only datapoint.
+    ///
+    /// A constructor because this type is `#[non_exhaustive]`: learning to
+    /// carry a new field must not be a breaking change, which also means a
+    /// caller in another crate cannot write a struct literal. Fields stay
+    /// public, so `access` and `endpoint` are set by assignment.
+    ///
+    /// Read-only by default deliberately. Some devices treat an unexpected
+    /// write as a configuration change, so writability is something a
+    /// definition states rather than something assumed.
+    #[must_use]
+    pub fn new(dp: u8, name: impl Into<String>, kind: TuyaKind) -> Self {
+        Self {
+            dp,
+            name: name.into(),
+            kind,
+            endpoint: None,
+            access: Access::Report,
+        }
+    }
+
+    /// Marks the datapoint writable as well as reported.
+    #[must_use]
+    pub fn writable(mut self) -> Self {
+        self.access = Access::ReportAndSet;
+        self
+    }
 }
 
 /// How a Tuya datapoint's payload is interpreted.

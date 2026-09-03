@@ -177,7 +177,86 @@ const KNOWN_TUYA_CONVERTERS = new Map([
   ['tuya.valueConverter.trueFalse0', {kind: 'Bool', inverted: true}],
   ['tuya.valueConverter.trueFalse1', {kind: 'Bool', inverted: false}],
   ['tuya.valueConverter.batteryState', {kind: 'Enum'}],
+  // Plain integers with their own capability meaning.
+  ['tuya.valueConverter.countdown', {kind: 'Value', divisor: 1}],
+  ['tuya.valueConverter.coverPosition', {kind: 'Value', divisor: 1}],
+  ['tuya.valueConverter.lockUnlock', {kind: 'Bool', inverted: false}],
+  ['tuya.valueConverterBasic.divideBy', {kind: 'Value', divisor: 1}],
 ]);
+
+/**
+ * Tuya converters this build deliberately does not claim.
+ *
+ * Each needs behaviour the datapoint table cannot express, and claiming one
+ * would report a device as usable while its values came out wrong:
+ *
+ * * `scale0_254to0_1000` is a range remap, not a divisor.
+ * * `coverPositionInverted` needs an inversion the numeric spec has no field
+ *   for, and getting it wrong closes a blind asked to open.
+ * * `static` substitutes a constant rather than converting anything.
+ * * the `threshold_*` and `phaseVariant*` converters unpack several values
+ *   from one datapoint.
+ *
+ * Listed rather than silently missing so the ranking shows them as work with a
+ * known shape.
+ */
+const UNEXPRESSIBLE_TUYA = new Set([
+  'tuya.valueConverter.scale0_254to0_1000',
+  'tuya.valueConverter.coverPositionInverted',
+  'tuya.valueConverter.static',
+  'tuya.valueConverter.threshold_2',
+  'tuya.valueConverter.threshold_3',
+  'tuya.valueConverter.phaseVariant2WithPhase',
+  'tuya.valueConverter.thermostatScheduleDayMultiDPWithDayNumber',
+  'tuya.valueConverter.utf16BEHexString',
+]);
+
+/**
+ * Extracts a `valueConverterBasic.lookup({...})` mapping.
+ *
+ * Values are either `tuya.enum(N)` or a boolean. Booleans map to 1 and 0 so
+ * one table shape serves both wire types — a device can report the same
+ * datapoint as either, and firmware revisions change which.
+ *
+ * Returns undefined if any entry cannot be evaluated: a partial lookup reports
+ * some values by name and the rest by number, which reads like two different
+ * devices.
+ */
+function lookupTable(node) {
+  if (!ts.isCallExpression(node)) return undefined;
+  const arg = node.arguments[0];
+  if (!arg || !ts.isObjectLiteralExpression(arg)) return undefined;
+
+  const values = [];
+  for (const entry of arg.properties) {
+    if (!ts.isPropertyAssignment(entry)) return undefined;
+    const name = entry.name.getText().replace(/["']/g, '');
+    const value = entry.initializer;
+    if (value.kind === ts.SyntaxKind.TrueKeyword) {
+      values.push([1, name]);
+      continue;
+    }
+    if (value.kind === ts.SyntaxKind.FalseKeyword) {
+      values.push([0, name]);
+      continue;
+    }
+    // `tuya.enum(0)`, `tuya.bitmap(...)` and friends.
+    if (ts.isCallExpression(value)) {
+      const inner = literal(value.arguments[0]);
+      if (typeof inner === 'number') {
+        values.push([inner, name]);
+        continue;
+      }
+    }
+    const plain = literal(value);
+    if (typeof plain === 'number') {
+      values.push([plain, name]);
+      continue;
+    }
+    return undefined;
+  }
+  return values.length > 0 ? {kind: 'Enum', values} : undefined;
+}
 
 /** `exposes` presets the IR can express. */
 const KNOWN_EXPOSES = new Set([
@@ -600,17 +679,30 @@ function transcodeTuyaDatapoints(def) {
     }
     const dp = literal(el.elements[0]);
     const name = literal(el.elements[1]);
-    const converter = el.elements[2].getText();
+    const converter = el.elements[2].getText().replace(/\s+/g, '');
     if (dp === NOT_LITERAL || name === NOT_LITERAL) {
       missing.push({primitive: 'tuyaDatapoints:non-literal', kind: 'rust'});
       continue;
     }
     const known = KNOWN_TUYA_CONVERTERS.get(converter);
-    if (!known) {
-      missing.push({primitive: converter, kind: 'primitive'});
+    if (known) {
+      out.push({dp, name, ...known});
       continue;
     }
-    out.push({dp, name, ...known});
+    // A lookup carries its own mapping, so it is expressible whenever the
+    // mapping is literal.
+    if (/valueConverterBasic\.lookup$/.test(converter.replace(/\(.*$/, ''))
+        || converter.includes('valueConverterBasic.lookup(')) {
+      const table = lookupTable(el.elements[2]);
+      if (table) {
+        out.push({dp, name, ...table});
+        continue;
+      }
+    }
+    missing.push({
+      primitive: converter.replace(/\(.*$/, ''),
+      kind: UNEXPRESSIBLE_TUYA.has(converter.replace(/\(.*$/, '')) ? 'rust' : 'primitive',
+    });
   }
   return {value: out, missing};
 }

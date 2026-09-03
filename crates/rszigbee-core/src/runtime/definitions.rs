@@ -361,31 +361,84 @@ pub fn command_to_action(
     definition: &Definition,
     cluster: ClusterId,
     command: u8,
+    params: &[(String, ZclValue)],
 ) -> Option<(CapabilityId, String)> {
-    let names = definition.extend.iter().find_map(|e| match e {
-        Extend::CommandsOnOff { commands, .. } => Some(commands),
-        _ => None,
-    })?;
-    if cluster != ON_OFF {
-        return None;
-    }
-    // `offWithEffect` is reported as `off`: from a user's point of view the
-    // button was the off button, and the effect is how it dimmed on the way.
-    let action = match command {
-        // 0x40 is `offWithEffect`, folded in with plain off: from a user's
-        // point of view the off button was pressed, and the effect is only how
-        // it faded on the way.
-        0x00 | 0x40 => "off",
-        0x01 => "on",
-        0x02 => "toggle",
+    let (declared, action) = match cluster {
+        ON_OFF => {
+            let declared = definition.extend.iter().find_map(|e| match e {
+                Extend::CommandsOnOff { commands, .. } => Some(commands),
+                _ => None,
+            })?;
+            let action = match command {
+                // 0x40 is `offWithEffect`, folded in with plain off: from a
+                // user's point of view the off button was pressed, and the
+                // effect is only how it faded on the way.
+                0x00 | 0x40 => "off",
+                0x01 => "on",
+                0x02 => "toggle",
+                _ => return None,
+            };
+            (declared, action.to_owned())
+        }
+        LEVEL => {
+            let declared = definition.extend.iter().find_map(|e| match e {
+                Extend::CommandsLevelCtrl { commands, .. } => Some(commands),
+                _ => None,
+            })?;
+            (declared, level_action(command, params)?)
+        }
         _ => return None,
     };
-    // Only actions the definition declares. A device that upstream says emits
-    // on and off should not suddenly report a toggle.
-    if !names.iter().any(|n| n == action) {
+
+    // Only actions the definition declares. A device upstream says emits up
+    // and down should not suddenly report a step.
+    if !declared.iter().any(|n| n == &action) {
         return None;
     }
-    Some((CapabilityId::from("action"), action.to_owned()))
+    Some((CapabilityId::from("action"), action))
+}
+
+/// Names a level-control command, including its direction.
+///
+/// The direction is in the payload, not the command id: `move` and `step` each
+/// carry a mode byte where 0 is up and 1 is down. Reporting both as one action
+/// would make a dimmer remote's two directions indistinguishable, which is the
+/// only thing anyone wants from it.
+fn level_action(command: u8, params: &[(String, ZclValue)]) -> Option<String> {
+    /// Reads a named mode byte, defaulting to up when absent.
+    fn upward(params: &[(String, ZclValue)], name: &str) -> bool {
+        params
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.as_uint())
+            .is_none_or(|mode| mode == 0)
+    }
+
+    Some(
+        match command {
+            // The `WithOnOff` variants are the same gesture: a remote's button
+            // does not become a different button because it also turns the
+            // light on.
+            0x00 | 0x04 => "brightness_move_to_level",
+            0x01 | 0x05 => {
+                if upward(params, "movemode") {
+                    "brightness_move_up"
+                } else {
+                    "brightness_move_down"
+                }
+            }
+            0x02 | 0x06 => {
+                if upward(params, "stepmode") {
+                    "brightness_step_up"
+                } else {
+                    "brightness_step_down"
+                }
+            }
+            0x03 | 0x07 => "brightness_stop",
+            _ => return None,
+        }
+        .to_owned(),
+    )
 }
 
 /// Converts a reported attribute into a capability value.
@@ -990,20 +1043,20 @@ mod tests {
         }];
 
         let (capability, action) =
-            command_to_action(&definition, ON_OFF, 0x01).expect("on is declared");
+            command_to_action(&definition, ON_OFF, 0x01, &[]).expect("on is declared");
         assert_eq!(capability.as_str(), "action");
         assert_eq!(action, "on");
 
         // `offWithEffect` is still the off button from a user's point of view.
         assert_eq!(
-            command_to_action(&definition, ON_OFF, 0x40).map(|(_, a)| a),
+            command_to_action(&definition, ON_OFF, 0x40, &[]).map(|(_, a)| a),
             Some("off".to_owned())
         );
 
         // Not declared, so not reported: upstream says this remote sends on
         // and off, and inventing a toggle would surface an action that never
         // happened.
-        assert!(command_to_action(&definition, ON_OFF, 0x02).is_none());
+        assert!(command_to_action(&definition, ON_OFF, 0x02, &[]).is_none());
     }
 
     #[test]
@@ -1037,7 +1090,7 @@ mod tests {
     fn a_bulb_does_not_turn_its_own_commands_into_actions() {
         // A light *has* on/off; it does not *emit* it. Without this a bulb
         // echoing a command back would look like a button press.
-        assert!(command_to_action(&light_definition(), ON_OFF, 0x01).is_none());
+        assert!(command_to_action(&light_definition(), ON_OFF, 0x01, &[]).is_none());
     }
 
     #[test]

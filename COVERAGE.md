@@ -9,13 +9,13 @@ Upstream definitions read: **4473**.
 
 | state | count | share | meaning |
 |---|---:|---:|---|
-| complete | 1193 | 26.7% | fully expressed as data |
+| complete | 1244 | 27.8% | fully expressed as data |
 | approximate | 943 | 21.1% | works, with something named not expressed |
-| needs-primitive | 1206 | 27.0% | blocked only on named shared helpers |
-| needs-rust | 1034 | 23.1% | blocked on per-device code |
+| needs-primitive | 1105 | 24.7% | blocked only on named shared helpers |
+| needs-rust | 1084 | 24.2% | blocked on per-device code |
 | unsupported | 97 | 2.2% | upstream's own deprecated path |
 
-**Usable today: 2136 / 4473 = 47.8%.**
+**Usable today: 2187 / 4473 = 48.9%.**
 
 `complete` and `approximate` are reported separately and never merged. An
 approximation is a device that works with something missing — a Hue bulb whose
@@ -31,13 +31,13 @@ that mentions it, which is the eventual reach.
 | primitive | kind | sole | total |
 |---|---|---:|---:|
 | `extend:non-call` | rust | 15 | 19 |
+| `fromZigbee:local` | rust | 12 | 704 |
 | `m.commandsLevelCtrl` | primitive | 12 | 81 |
 | `fz.ias_occupancy_alarm_1_with_timeout` | primitive | 12 | 13 |
-| `fromZigbee:local` | rust | 11 | 704 |
 | `sunricher.extend.externalSwitchType` | primitive | 11 | 19 |
 | `toZigbee:local` | rust | 10 | 458 |
+| `tz.on_off` | primitive | 10 | 200 |
 | `configure:imperative` | rust | 10 | 103 |
-| `tz.on_off` | primitive | 9 | 200 |
 | `configure:not-a-function` | rust | 9 | 45 |
 | `m.pressure` | primitive | 8 | 26 |
 | `fz.ias_occupancy_alarm_2` | primitive | 8 | 11 |
@@ -49,19 +49,19 @@ that mentions it, which is the eventual reach.
 | `m.commandsWindowCovering` | primitive | 6 | 24 |
 | `e.gas` | primitive | 6 | 24 |
 | `m.thermostat` | primitive | 6 | 15 |
+| `exposes:function` | rust | 5 | 73 |
+| `e.switch().setAccess` | primitive | 5 | 20 |
 | `sunricher.extend.minimumPWM` | primitive | 5 | 14 |
 | `configure:device.getEndpoint(1).saveClusterAttributeKeyValue` | primitive | 5 | 9 |
-| `tuya.valueConverterBasic.lookup({none: tuya.enum(0), low: tuya.enum(1), high: tuya.enum(2)})` | primitive | 5 | 8 |
 | `gledoptoConfigureReadModelID` | primitive | 5 | 5 |
 | `m.lock` | primitive | 5 | 5 |
 | `tuya.exposes.switch` | primitive | 4 | 38 |
+| `fingerprint:non-literal` | data | 4 | 31 |
 | `m.enumLookup:non-literal-args` | rust | 4 | 29 |
 | `m.bindCluster` | primitive | 4 | 26 |
 | `fz.ias_contact_alarm_1_report` | primitive | 4 | 11 |
-| `tuya.modernExtend.electricityMeasurementPoll` | primitive | 4 | 11 |
-| `m.deviceTemperature` | primitive | 4 | 9 |
 
-Distinct missing primitives: **2194**, so the tail is long and the
+Distinct missing primitives: **1562**, so the tail is long and the
 top of this table is where the leverage is.
 
 ## What this number is not

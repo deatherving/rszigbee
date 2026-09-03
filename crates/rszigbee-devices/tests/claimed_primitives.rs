@@ -78,6 +78,10 @@ fn build(name: &str) -> Option<Extend> {
             commands: Vec::new(),
             endpoints: Vec::new(),
         },
+        "CommandsLevelCtrl" => Extend::CommandsLevelCtrl {
+            commands: Vec::new(),
+            endpoints: Vec::new(),
+        },
         "ForcePowerSource" => Extend::ForcePowerSource {
             source: rszigbee_devices::PowerSourceHint::Mains,
         },
