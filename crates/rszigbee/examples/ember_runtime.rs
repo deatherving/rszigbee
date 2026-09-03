@@ -128,16 +128,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  !! the coordinator has NO record; requests to it will be refused");
     }
 
-    read_own_basic(&zigbee).await;
-    interview_coordinator(&zigbee).await;
-
+    // Joining first when it is wanted. The coordinator self-tests below take
+    // about twelve seconds, and a device's pairing window is finite — spending
+    // that time before opening the window cost one attempt already.
     if permit_join {
-        println!("\n=== opening joining for 60s ===");
-        zigbee.permit_join(Duration::from_secs(60), None).await?;
-        println!("join a device now; events follow");
+        println!("\n=== opening joining for 240s ===");
+        zigbee.permit_join(Duration::from_secs(240), None).await?;
+        println!("put the device in pairing mode now; events follow");
+        drain_events(&zigbee, 240).await;
+    } else {
+        read_own_basic(&zigbee).await;
+        interview_coordinator(&zigbee).await;
+        drain_events(&zigbee, 3).await;
     }
-
-    drain_events(&zigbee, if permit_join { 60 } else { 3 }).await;
 
     println!("\n=== final device table ===");
     for device in zigbee.devices().await? {
@@ -235,7 +238,13 @@ async fn interview_coordinator(zigbee: &Zigbee) {
 /// With `--permit-join` this is where a real device would show up; without it,
 /// it confirms the event stream is live and that nothing unexpected arrives.
 async fn drain_events(zigbee: &Zigbee, window: u64) {
+    use std::io::Write as _;
+
     println!("\n=== events ===");
+    // Flushed after every line. A join window is finite, and output that only
+    // appears when the process exits cannot tell you whether the device is
+    // being seen while there is still time to retry.
+    let _ = std::io::stdout().flush();
     let mut events = zigbee.events();
     let deadline = tokio::time::sleep(Duration::from_secs(window));
     tokio::pin!(deadline);
@@ -245,8 +254,12 @@ async fn drain_events(zigbee: &Zigbee, window: u64) {
             event = events.recv() => match event {
                 Some(Event::ZclMessage(message)) => {
                     println!("  {} {:?}", message.ieee, message.kind);
+                    let _ = std::io::stdout().flush();
                 }
-                Some(event) => println!("  {event:?}"),
+                Some(event) => {
+                    println!("  {event:?}");
+                    let _ = std::io::stdout().flush();
+                }
                 None => break,
             },
         }

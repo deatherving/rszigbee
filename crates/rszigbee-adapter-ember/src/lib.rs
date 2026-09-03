@@ -246,6 +246,13 @@ impl CoordinatorAdapter for EmberAdapter {
         // before the network comes up.
         bringup::configure_endpoints(&mut session.connection, SILABS).await?;
 
+        // Trust-centre policies, also before the stack comes up. `permitJoining`
+        // only opens the association window; whether a device is *admitted* is
+        // a separate decision, and the EmberZNet default admits only devices
+        // with a preconfigured key -- which no ordinary device has. Without
+        // this, joining opened and nothing ever joined.
+        bringup::configure_join_policies(&mut session.connection).await?;
+
         // Then resume any stored network. Skipping this makes `networkState`
         // report NoNetwork on a coordinator that has a perfectly good network,
         // which would lead a stack straight into forming over it. Observed on
@@ -483,10 +490,56 @@ async fn pump_callbacks(
     mut callbacks: tokio::sync::mpsc::Receiver<ezsp::Callback>,
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
 ) {
+    use ezsp::ember::device::Update as DeviceUpdate;
     use ezsp::parameters::messaging::handler::Handler as Messaging;
+    use ezsp::parameters::trust_center::handler::Handler as TrustCenter;
 
     while let Some(cb) = callbacks.recv().await {
         let translated = match &cb {
+            // A device appearing on, or leaving, the network. Handled here
+            // because until it was, the Ember adapter never emitted
+            // `DeviceJoined` at all: the callback was logged as unhandled and
+            // dropped, so a device that joined stayed invisible to the runtime
+            // until it happened to send a ZCL frame of its own. Everything the
+            // runtime does on a join -- creating the record, interviewing,
+            // resolving a definition, configuring reporting -- could therefore
+            // never trigger against real hardware.
+            ezsp::Callback::TrustCenter(TrustCenter::TrustCenterJoin(j)) => {
+                let ieee = eui64_to_ieee(j.new_node_eui64());
+                let nwk = Nwk::new(j.new_node_id());
+                match j.status() {
+                    // A departure is reported by the same callback as an
+                    // arrival, distinguished only by this status. Treating
+                    // every one of them as a join would resurrect devices that
+                    // had just left.
+                    Ok(DeviceUpdate::DeviceLeft) => {
+                        info!(%ieee, "device left the network");
+                        Some(AdapterEvent::DeviceLeft {
+                            ieee: Some(ieee),
+                            nwk: Some(nwk),
+                        })
+                    }
+                    Ok(update) => {
+                        info!(%ieee, nwk = nwk.raw(), ?update, "device joined");
+                        Some(AdapterEvent::DeviceJoined {
+                            ieee: Some(ieee),
+                            nwk,
+                        })
+                    }
+                    // A status this build does not model. Reported as a join
+                    // rather than dropped: the callback only fires for a
+                    // device whose membership changed, and a device the
+                    // runtime knows about is recoverable while one it never
+                    // heard of is not.
+                    Err(raw) => {
+                        warn!(%ieee, raw, "unmodelled trust-centre join status");
+                        Some(AdapterEvent::DeviceJoined {
+                            ieee: Some(ieee),
+                            nwk,
+                        })
+                    }
+                }
+            }
             ezsp::Callback::Messaging(Messaging::IncomingMessage(m))
                 if m.aps_frame().profile_id() == 0x0000 =>
             {

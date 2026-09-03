@@ -136,6 +136,72 @@ pub async fn configure_endpoints(
     Ok(())
 }
 
+/// Sets the trust-centre policies a coordinator needs to admit a device.
+///
+/// `permitJoining` only opens the MAC association window. Whether a device is
+/// actually admitted, and whether it is given the network key, is a separate
+/// *trust-centre* decision — and `EmberZNet`'s default for that is to allow only
+/// devices whose key was preconfigured, which no ordinary device has. So
+/// joining appeared to work and nothing ever joined: the window opened, the
+/// device tried, and the trust centre silently declined.
+///
+/// Observed exactly that against real firmware, with a device in pairing mode
+/// and a full 60-second window producing no events at all.
+///
+/// The two that matter:
+///
+/// * **Trust centre**: allow joins and rejoins. Without it nothing can join at
+///   all.
+/// * **TC key request**: Zigbee 3.0 devices ask the trust centre for the link
+///   key as part of joining, and a device whose request is denied drops off
+///   again shortly after appearing to succeed.
+///
+/// Application key requests stay denied. That is key material for
+/// device-to-device encryption, nothing here needs it, and granting it widens
+/// what a joined device can ask for on the basis that it happened to ask.
+pub async fn configure_join_policies(
+    connection: &mut ezsp::Connection,
+) -> Result<(), AdapterError> {
+    use ezsp::ezsp::{decision, policy};
+
+    /// Allow joins and rejoins from devices without a preconfigured key.
+    const ALLOW_JOINS: u8 = decision::Id::AllowJoins as u8;
+    /// Answer a joining device's key request with the current link key.
+    const SEND_CURRENT_KEY: u8 = decision::Id::AllowTcKeyRequestsAndSendCurrentKey as u8;
+    /// Refuse application link key requests.
+    const DENY_APP_KEYS: u8 = decision::Id::DenyAppKeyRequests as u8;
+
+    for (id, decision, what) in [
+        (
+            policy::Id::TrustCenter,
+            ALLOW_JOINS,
+            "admit joining devices",
+        ),
+        (
+            policy::Id::TcKeyRequest,
+            SEND_CURRENT_KEY,
+            "answer link key requests",
+        ),
+        (
+            policy::Id::AppKeyRequest,
+            DENY_APP_KEYS,
+            "refuse application key requests",
+        ),
+    ] {
+        connection
+            .set_policy(id, decision)
+            .await
+            .map_err(|e| {
+                AdapterError::Transport(format!(
+                    "cannot set the {id:?} policy to {what}: {e}. Without it a                      device cannot join even while joining is open."
+                ))
+            })?;
+    }
+
+    debug!("trust-centre policies set: joins allowed, link keys answered");
+    Ok(())
+}
+
 /// Resumes a stored network, if there is one.
 pub async fn resume_stored_network(
     connection: &mut ezsp::Connection,
