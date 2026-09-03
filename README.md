@@ -24,8 +24,12 @@ Verified on a Sonoff ZBDongle-E (EFR32MG21, EmberZNet 7.4.4.0, EZSP v13):
 
 - Serial → ASHv2 → EZSP session bring-up, with per-dongle serial settings
 - Forming a network, and resuming it across a restart
-- ZDO round trips — node descriptor, active endpoints, simple descriptors
 - Persistence surviving a restart
+- **The runtime itself**, not just the adapter: start, the device table, the
+  ZDO interview through `Zigbee::interview`, ZCL transaction correlation, and a
+  clean stop — `ember_runtime`. It found two real bugs on its first run, which
+  is the argument for driving hardware through the runtime rather than through
+  the adapter
 
 Working against the mock coordinator, so verifiable anywhere:
 
@@ -60,7 +64,7 @@ The runtime consumes definitions, in both directions:
 
 No MQTT layer, no Home Assistant discovery.
 
-341 tests, none of which need hardware.
+345 tests, none of which need hardware.
 
 ## Crates
 
@@ -249,8 +253,11 @@ cargo run -p rszigbee --example runtime_mock
 ```
 
 `runtime_mock` drives the whole runtime against a mock coordinator — a join, a
-temperature report, a rejoin at a new short address. `ember_selftest` interviews
-the real coordinator over ZDO, which needs no other device on the network.
+temperature report, a rejoin at a new short address. Against real hardware,
+`ember_runtime` drives the *runtime* and `ember_selftest` drives the *adapter*;
+both interview the coordinator, which needs no other device on the network.
+Binding and attribute reporting do need a second device, and stay unverified
+against hardware until one exists.
 `spikes/ezsp-probe` is a read-only probe for checking whether a dongle speaks
 EZSP at all; it is safe against a live network.
 
