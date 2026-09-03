@@ -207,8 +207,32 @@ const UNEXPRESSIBLE_TUYA = new Set([
   'tuya.valueConverter.threshold_2',
   'tuya.valueConverter.threshold_3',
   'tuya.valueConverter.phaseVariant2WithPhase',
-  'tuya.valueConverter.thermostatScheduleDayMultiDPWithDayNumber',
   'tuya.valueConverter.utf16BEHexString',
+]);
+
+/**
+ * Converters delegated to a *named Rust behaviour*.
+ *
+ * These need behaviour a table cannot express — one datapoint unpacking into
+ * several structured entries — and the answer is not to keep growing the
+ * schema until it can say that. The definition names a behaviour and the
+ * runtime looks it up; the rest of the device stays declarative and stays
+ * maintained by this transcoder.
+ *
+ * A name here is a claim that `rszigbee-core` ships the behaviour, and a Rust
+ * test checks it, so adding one without the implementation fails the build
+ * rather than inflating coverage.
+ */
+const TUYA_BEHAVIORS = new Map([
+  [
+    'tuya.valueConverter.thermostatScheduleDayMultiDPWithDayNumber',
+    'tuya:thermostat-schedule',
+  ],
+  ['tuya.valueConverter.thermostatScheduleDayMultiDP', 'tuya:thermostat-schedule'],
+  [
+    'tuya.valueConverter.thermostatScheduleDayMultiDPWithTransitionCount',
+    'tuya:thermostat-schedule',
+  ],
 ]);
 
 /**
@@ -663,6 +687,7 @@ function transcodeExposes(def) {
 
 function transcodeTuyaDatapoints(def) {
   const missing = [];
+  const delegated = [];
   const out = [];
   const meta = prop(def, 'meta');
   const dps = prop(meta, 'tuyaDatapoints');
@@ -699,12 +724,22 @@ function transcodeTuyaDatapoints(def) {
         continue;
       }
     }
+    const bare = converter.replace(/\(.*$/, '');
+
+    // Delegated to a named behaviour: expressible, just not as a table.
+    const behavior = TUYA_BEHAVIORS.get(bare);
+    if (behavior) {
+      out.push({dp, name, kind: 'Behavior', behavior});
+      delegated.push({primitive: bare, behavior});
+      continue;
+    }
+
     missing.push({
-      primitive: converter.replace(/\(.*$/, ''),
-      kind: UNEXPRESSIBLE_TUYA.has(converter.replace(/\(.*$/, '')) ? 'rust' : 'primitive',
+      primitive: bare,
+      kind: UNEXPRESSIBLE_TUYA.has(bare) ? 'rust' : 'primitive',
     });
   }
-  return {value: out, missing};
+  return {value: out, missing, delegated};
 }
 
 function transcodeEndpoints(def) {
@@ -896,11 +931,13 @@ function transcode(def, file, line) {
 
   const missing = [];
   const approximations = [];
+  const delegated = [];
   const sections = {};
   const push = (name, result) => {
     sections[name] = result.missing.length === 0;
     missing.push(...result.missing);
     approximations.push(...(result.approximations ?? []));
+    delegated.push(...(result.delegated ?? []));
     return result.value;
   };
 
@@ -949,7 +986,15 @@ function transcode(def, file, line) {
   // ---- classification
   const kinds = new Set(missing.map((m) => m.kind));
   let classification;
-  if (missing.length === 0 && approximations.length === 0) classification = 'complete';
+  if (missing.length === 0 && approximations.length === 0 && delegated.length === 0) {
+    classification = 'complete';
+  }
+  // Fully expressed, but part of it through named Rust behaviour rather than
+  // as data. Its own bucket, because "how much is pure data" and "how much
+  // works" are different questions and both are worth knowing.
+  else if (missing.length === 0 && approximations.length === 0) {
+    classification = 'complete-with-behavior';
+  }
   // Usable, but not a faithful transcription. Kept as its own bucket so the
   // headline number cannot quietly absorb it.
   else if (missing.length === 0) classification = 'approximate';
@@ -983,6 +1028,7 @@ function transcode(def, file, line) {
       // does not inflate the ranking.
       missing: [...new Map(missing.map((m) => [m.primitive, m])).values()],
       approximations: [...new Map(approximations.map((a) => [a.primitive, a])).values()],
+      delegated: [...new Map(delegated.map((d) => [d.primitive, d])).values()],
       generated: generatedAnything,
     },
   };
@@ -1039,7 +1085,9 @@ for (const r of reports) byClass.set(r.classification, (byClass.get(r.classifica
 
 const blockedBy = new Map();
 for (const r of reports) {
-  if (r.classification === 'complete' || r.classification === 'approximate') continue;
+  if (['complete', 'complete-with-behavior', 'approximate'].includes(r.classification)) {
+    continue;
+  }
   for (const m of r.missing) {
     if (!blockedBy.has(m.primitive)) blockedBy.set(m.primitive, {kind: m.kind, devices: 0, soleBlocker: 0});
     const entry = blockedBy.get(m.primitive);
@@ -1066,8 +1114,34 @@ console.log(`\ndistinct missing primitives: ${blockedBy.size}`);
 // A usable definition is complete *or* a documented approximation. Both are
 // reported, never merged: the first is a transcription, the second is a
 // device that works with something missing.
-const usable = reports.filter((r) => r.classification === 'complete'
-                                  || r.classification === 'approximate').length;
+const usable = reports.filter((r) =>
+  ['complete', 'complete-with-behavior', 'approximate'].includes(r.classification)).length;
+const pureData = reports.filter((r) => r.classification === 'complete').length;
+const viaBehavior = reports.filter((r) => r.classification === 'complete-with-behavior').length;
+console.log(`  pure data: ${pureData}, data + Rust behaviour: ${viaBehavior}`);
+
+// How much the escape hatch carries, whether or not the definition is
+// otherwise finished. Counting only fully-complete definitions would hide it:
+// a thermostat whose schedule is handled but whose child lock is not still had
+// its hardest part solved.
+const behaviorUse = new Map();
+for (const r of reports) {
+  for (const d of r.delegated ?? []) {
+    if (!behaviorUse.has(d.behavior)) {
+      behaviorUse.set(d.behavior, {definitions: 0, wouldComplete: 0});
+    }
+    const entry = behaviorUse.get(d.behavior);
+    entry.definitions += 1;
+    // Would this definition be finished if only the behaviour mattered?
+    if (r.missing.length === 0) entry.wouldComplete += 1;
+  }
+}
+const delegatedDefs = reports.filter((r) => (r.delegated ?? []).length > 0).length;
+console.log(`\n=== named Rust behaviours ===`);
+console.log(`  definitions using one: ${delegatedDefs}`);
+for (const [name, e] of [...behaviorUse].sort((a, b) => b[1].definitions - a[1].definitions)) {
+  console.log(`  ${String(e.definitions).padStart(4)} definitions  ${name}`);
+}
 console.log(`\nusable (complete + approximate): ${usable} / ${total} = ${(100 * usable / total).toFixed(1)}%`);
 
 // ---------------------------------------------------------------------------
@@ -1125,12 +1199,27 @@ Upstream definitions read: **${total}**.
 | state | count | share | meaning |
 |---|---:|---:|---|
 | complete | ${byClass.get('complete') ?? 0} | ${pct(byClass.get('complete') ?? 0)} | fully expressed as data |
+| complete-with-behavior | ${byClass.get('complete-with-behavior') ?? 0} | ${pct(byClass.get('complete-with-behavior') ?? 0)} | data plus a named Rust behaviour |
 | approximate | ${byClass.get('approximate') ?? 0} | ${pct(byClass.get('approximate') ?? 0)} | works, with something named not expressed |
 | needs-primitive | ${byClass.get('needs-primitive') ?? 0} | ${pct(byClass.get('needs-primitive') ?? 0)} | blocked only on named shared helpers |
 | needs-rust | ${byClass.get('needs-rust') ?? 0} | ${pct(byClass.get('needs-rust') ?? 0)} | blocked on per-device code |
 | unsupported | ${byClass.get('unsupported') ?? 0} | ${pct(byClass.get('unsupported') ?? 0)} | upstream's own deprecated path |
 
 **Usable today: ${usable} / ${total} = ${pct(usable)}.**
+
+Split by how it is expressed: **${pureData} pure data**, **${viaBehavior}** data plus a
+named Rust behaviour, **${byClass.get('approximate') ?? 0}** approximations.
+
+${delegatedDefs} definitions delegate at least one datapoint to a named Rust
+behaviour, whether or not the rest of the definition is finished. That count
+matters on its own: a thermostat whose weekly schedule is handled but whose
+child lock is not has had its hardest part solved, and counting only
+fully-complete definitions would hide that entirely.
+
+| behaviour | definitions using it |
+|---|---:|
+${[...behaviorUse].sort((a, b) => b[1].definitions - a[1].definitions)
+  .map(([name, e]) => `| \`${name}\` | ${e.definitions} |`).join('\n') || '| _none yet_ | 0 |'}
 
 \`complete\` and \`approximate\` are reported separately and never merged. An
 approximation is a device that works with something missing — a Hue bulb whose
@@ -1171,6 +1260,10 @@ fs.writeFileSync(
     // produces a binding to whatever cluster happens to live at it, so the
     // Rust side checks every one against the cluster registry.
     clusters: Object.fromEntries([...CLUSTER_IDS].sort((a, b) => a[1] - b[1])),
+    // Named behaviours this transcoder delegates to. A Rust test checks each
+    // one is actually shipped, so adding a name without the implementation
+    // fails the build rather than inflating coverage.
+    behaviors: [...new Set(TUYA_BEHAVIORS.values())].sort(),
   }, null, 1),
 );
 console.log('wrote COVERAGE.md and claimed-primitives.json');

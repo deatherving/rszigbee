@@ -157,6 +157,17 @@ startup, because continuing means forming a new network. 64-bit values are
 written as hex strings — an extended PAN id exceeds 2^53, where a JSON consumer
 using doubles corrupts it silently.
 
+**The escape hatch is local, not total.** Roughly a quarter of upstream's
+catalogue needs behaviour a table cannot express — a datapoint that unpacks
+into several structured entries, a configure step with a real decision in it.
+The tempting answer is to keep growing the declarative format until it can say
+those things, and the end of that road is a schema that has become a badly
+designed programming language. Instead a definition *names* a behaviour and the
+runtime looks it up, attached to one datapoint rather than to the whole device
+— so everything else stays declarative and stays maintained by the importer.
+Behaviours return `Handled` or `NotHandled`, and `NotHandled` never drops into
+a generic best effort.
+
 **Device support is data, and coverage is measured rather than estimated.**
 The format expresses five things — helper references, Tuya datapoint tables, a
 bind/report table, endpoint name maps, and a Rust escape hatch — chosen by

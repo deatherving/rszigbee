@@ -46,6 +46,8 @@
 //! [`DeviceCommand::ZclAttributes`] work today: the runtime encodes them from
 //! the cluster registry, so they need no device definition.
 
+mod behavior;
+mod behaviors;
 mod decode;
 mod definitions;
 mod encode;
@@ -71,6 +73,10 @@ use crate::event::Event;
 use crate::reachability::{ReachabilityPolicy, SilencePolicy};
 use crate::store::{StoreError, ZigbeeStore};
 
+pub use behavior::{
+    BehaviorRegistry, ConfigureContext, DecodeContext, DeviceBehavior, EncodeContext, Outcome,
+};
+pub use behaviors::TuyaThermostatSchedule;
 pub use definitions::{ConfigureStep, PlannedZcl};
 pub use encode::EncodeError;
 pub use interview::InterviewOutcome;
@@ -247,6 +253,7 @@ pub struct ZigbeeBuilder<A, S> {
     event_capacity: usize,
     interview_on_join: bool,
     registry: rszigbee_spec::zcl::registry::ClusterRegistry,
+    behaviors: BehaviorRegistry,
     definitions: rszigbee_devices::DefinitionIndex,
 }
 
@@ -294,6 +301,21 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> ZigbeeBuilder<A, S> {
     #[must_use]
     pub fn event_capacity(mut self, events: usize) -> Self {
         self.event_capacity = events.max(1);
+        self
+    }
+
+    /// Adds a named behaviour a definition can delegate to.
+    ///
+    /// The shipped behaviours are present by default. This is for behaviour a
+    /// caller implements themselves — a device nobody has contributed a
+    /// definition for, or one whose quirk is specific to a deployment.
+    ///
+    /// A behaviour is attached to part of a definition, not to a whole device:
+    /// everything the declarative table can express keeps going through it, so
+    /// the device stays maintained by the importer.
+    #[must_use]
+    pub fn behavior(mut self, behavior: impl DeviceBehavior) -> Self {
+        self.behaviors.insert(behavior);
         self
     }
 
@@ -389,6 +411,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> ZigbeeBuilder<A, S> {
                 coordinator,
                 network_known: stored.is_some(),
                 registry: self.registry,
+                behaviors: self.behaviors,
                 definitions: self.definitions,
             },
             handle.clone(),
@@ -442,6 +465,7 @@ impl Zigbee {
             event_capacity: DEFAULT_EVENT_CAPACITY,
             interview_on_join: true,
             registry: rszigbee_spec::zcl::registry::ClusterRegistry::with_builtins(),
+            behaviors: BehaviorRegistry::with_builtins(),
             definitions: rszigbee_devices::DefinitionIndex::new(),
         }
     }
@@ -1945,6 +1969,161 @@ mod definition_integration {
             match tokio::time::timeout(Duration::from_millis(40), stream.recv()).await {
                 Ok(Some(Event::StateChanged { changes, .. })) => {
                     panic!("an unmodelled datapoint must not invent state: {changes:?}")
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delegated_datapoint_is_handled_by_its_named_behaviour() {
+        // The escape hatch end to end: one datapoint delegated to Rust, the
+        // rest of the device still declarative.
+        let mut definition = Definition::new("TS0601_thermostat");
+        definition.match_rules.fingerprints = vec![{
+            let mut fp = rszigbee_devices::Fingerprint::default();
+            fp.model_id = Some("TS0601".into());
+            fp.manufacturer_name = Some("_TZE200_thermostat".into());
+            fp
+        }];
+        definition.extend = vec![Extend::TuyaBase {
+            datapoints: true,
+            query_on_announce: false,
+            query_interval_secs: None,
+        }];
+        definition.tuya_datapoints = vec![
+            rszigbee_devices::TuyaDatapoint::new(
+                28,
+                "schedule_monday",
+                rszigbee_devices::TuyaKind::Behavior {
+                    name: "tuya:thermostat-schedule".into(),
+                },
+            )
+            .writable(),
+            rszigbee_devices::TuyaDatapoint::new(
+                2,
+                "current_heating_setpoint",
+                rszigbee_devices::TuyaKind::Value({
+                    let mut spec = rszigbee_devices::NumericSpec::default();
+                    spec.divisor = 10;
+                    spec
+                }),
+            ),
+        ];
+        let mut index = DefinitionIndex::new();
+        index.insert(definition).expect("insert");
+
+        let store = MemoryStore::new();
+        let mut device = PersistedDevice::new(SENSOR, Nwk::new(0x1234));
+        device.interview = InterviewState::Successful;
+        device.basic.model_id = Some("TS0601".into());
+        device.basic.manufacturer_name = Some("_TZE200_thermostat".into());
+        device.endpoints = vec![PersistedEndpoint {
+            id: EndpointId(1),
+            profile: rszigbee_spec::ids::ProfileId::HA,
+            device_id: 0x0051,
+            input_clusters: vec![ClusterId(0x0000), ClusterId(0xef00)],
+            output_clusters: Vec::new(),
+        }];
+        store.upsert_device(&device).await.expect("upsert");
+
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, store)
+            .definitions(index)
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        let mut stream = zigbee.events();
+
+        // dp 28, raw: Monday with two transitions.
+        let schedule = [1u8, 6, 0, 0, 210, 8, 0, 0, 170];
+        let mut frame = vec![0x09, 0x20, 0x02, 0x00, 0x01, 28, 0x00];
+        #[expect(clippy::cast_possible_truncation, reason = "test data, nine bytes")]
+        let length = schedule.len() as u16;
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&schedule);
+
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0xef00),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+
+        let changes = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match stream.recv().await {
+                    Some(Event::StateChanged { changes, .. }) => return changes,
+                    Some(_) => {}
+                    None => panic!("the stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("the behaviour must produce state");
+
+        assert_eq!(
+            changes
+                .get(&crate::capability::CapabilityId::from("schedule_monday"))
+                .cloned(),
+            Some(crate::state::StateValue::Str(
+                "06:00/21.0 08:00/17.0".into()
+            )),
+            "a table could not express this, and a named behaviour did"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_datapoint_naming_a_behaviour_nothing_implements_produces_nothing() {
+        // Not a fallback and not a crash: the datapoint is simply unhandled,
+        // and the coverage report is where that shows up.
+        let mut definition = Definition::new("TS0601_unknown");
+        definition.match_rules.models = vec!["TS0601".into()];
+        definition.tuya_datapoints = vec![rszigbee_devices::TuyaDatapoint::new(
+            9,
+            "mystery",
+            rszigbee_devices::TuyaKind::Behavior {
+                name: "nobody:implements-this".into(),
+            },
+        )];
+        let mut index = DefinitionIndex::new();
+        index.insert(definition).expect("insert");
+
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, tuya_store().await)
+            .definitions(index)
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        let mut stream = zigbee.events();
+
+        let mut frame = vec![0x09, 0x21, 0x02, 0x00, 0x01, 9, 0x00, 0x00, 0x01, 0x07];
+        frame.truncate(10);
+        control.emit(AdapterEvent::Zcl(ZclRx {
+            ieee: Some(SENSOR),
+            nwk: Nwk::new(0x1234),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster: ClusterId(0xef00),
+            group: None,
+            was_broadcast: false,
+            link_quality: None,
+            frame,
+        }));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(40), stream.recv()).await {
+                Ok(Some(Event::StateChanged { changes, .. })) => {
+                    panic!("an unimplemented behaviour must not fall back to a guess: {changes:?}")
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,

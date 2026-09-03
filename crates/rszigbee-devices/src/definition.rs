@@ -509,6 +509,20 @@ pub enum TuyaKind {
     String,
     /// Raw bytes this build cannot interpret, kept so a person can.
     Raw,
+    /// Conversion is delegated to a named Rust behaviour.
+    ///
+    /// For datapoints that unpack into several structured fields — a
+    /// thermostat's weekly schedule, a phase-variant power reading. Adding a
+    /// field to this format for each of those would turn the schema into a
+    /// badly designed programming language, so the definition names a
+    /// behaviour and the runtime looks it up.
+    ///
+    /// A name nothing implements means the datapoint is simply not handled,
+    /// which is visible in the coverage report rather than silent.
+    Behavior {
+        /// The behaviour's name, which is part of the contract.
+        name: String,
+    },
 }
 
 /// A binding and its attribute reporting, set up at join time.

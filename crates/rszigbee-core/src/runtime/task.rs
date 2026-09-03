@@ -31,6 +31,7 @@ use rszigbee_spec::zdo::ZdoClusterId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use super::behavior::BehaviorRegistry;
 use super::inventory::{self, Inventory};
 use super::{
     ConfigureOutcome, InterviewOutcome, InterviewUpdate, Request, RuntimeError, ZDO_TIMEOUT,
@@ -60,6 +61,7 @@ pub struct Config<A, S> {
     pub coordinator: Ieee,
     pub network_known: bool,
     pub registry: ClusterRegistry,
+    pub behaviors: BehaviorRegistry,
     pub definitions: DefinitionIndex,
 }
 
@@ -101,6 +103,7 @@ pub fn spawn<A: CoordinatorAdapter, S: ZigbeeStore>(config: Config<A, S>, handle
         zcl_sequence: 0,
         tuya_sequence: 0,
         registry: config.registry,
+        behaviors: config.behaviors,
         definitions: config.definitions,
         handle,
     };
@@ -126,6 +129,7 @@ struct Task<A, S> {
     /// carries a sequence of its own and devices track it independently.
     tuya_sequence: u16,
     registry: ClusterRegistry,
+    behaviors: BehaviorRegistry,
     definitions: DefinitionIndex,
     handle: Zigbee,
 }
@@ -1056,6 +1060,34 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
     ) -> Result<(Option<EndpointId>, ClusterId, Vec<u8>), CommandError> {
         let definition = self.resolve(ieee).ok_or(CommandError::NoDefinition)?;
 
+        // A behaviour is consulted only for what the table cannot say, so the
+        // declarative lookup runs first.
+        let behaviour_points = if tuya::command_to_datapoint(definition, command).is_none() {
+            self.devices.get(ieee).and_then(|entry| {
+                tuya::command_via_behavior(definition, command, &entry.info, &self.behaviors)
+            })
+        } else {
+            None
+        };
+        if let Some(points) = behaviour_points {
+            if points.is_empty() {
+                // Claimed and refused: the behaviour decided the command was
+                // invalid, and sending a partial write would leave the device
+                // in a state nobody asked for.
+                return Err(CommandError::InvalidValue {
+                    capability: crate::capability::CapabilityId::from("behavior"),
+                    value: "the device behaviour refused this command".into(),
+                });
+            }
+            self.tuya_sequence = self.tuya_sequence.wrapping_add(1);
+            let payload = rszigbee_spec::tuya::encode(self.tuya_sequence, &points);
+            return Ok((
+                Some(EndpointId(1)),
+                rszigbee_spec::tuya::CLUSTER,
+                encode::planned(tsn, rszigbee_spec::tuya::DATA_REQUEST, &payload),
+            ));
+        }
+
         if let Some(point) = tuya::command_to_datapoint(definition, command) {
             self.tuya_sequence = self.tuya_sequence.wrapping_add(1);
             let payload = rszigbee_spec::tuya::encode(self.tuya_sequence, &[point]);
@@ -1102,10 +1134,17 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             return;
         }
 
-        let Some(definition) = self.resolve(ieee) else {
+        let Some(entry) = self.devices.get(ieee) else {
             return;
         };
-        let changes = tuya::datapoints_to_state(definition, &datapoints);
+        let Some(definition) = self
+            .definitions
+            .resolve(&definitions::device_match(&entry.info))
+        else {
+            return;
+        };
+        let changes =
+            tuya::datapoints_to_state(definition, &datapoints, &entry.info, &self.behaviors);
         if changes.is_empty() {
             // The device reported datapoints the table does not name. Worth
             // seeing, because it is the signal that the definition is

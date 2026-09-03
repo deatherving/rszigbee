@@ -10,12 +10,26 @@ Upstream definitions read: **4473**.
 | state | count | share | meaning |
 |---|---:|---:|---|
 | complete | 1244 | 27.8% | fully expressed as data |
+| complete-with-behavior | 0 | 0.0% | data plus a named Rust behaviour |
 | approximate | 943 | 21.1% | works, with something named not expressed |
-| needs-primitive | 1105 | 24.7% | blocked only on named shared helpers |
-| needs-rust | 1084 | 24.2% | blocked on per-device code |
+| needs-primitive | 1109 | 24.8% | blocked only on named shared helpers |
+| needs-rust | 1080 | 24.1% | blocked on per-device code |
 | unsupported | 97 | 2.2% | upstream's own deprecated path |
 
 **Usable today: 2187 / 4473 = 48.9%.**
+
+Split by how it is expressed: **1244 pure data**, **0** data plus a
+named Rust behaviour, **943** approximations.
+
+29 definitions delegate at least one datapoint to a named Rust
+behaviour, whether or not the rest of the definition is finished. That count
+matters on its own: a thermostat whose weekly schedule is handled but whose
+child lock is not has had its hardest part solved, and counting only
+fully-complete definitions would hide that entirely.
+
+| behaviour | definitions using it |
+|---|---:|
+| `tuya:thermostat-schedule` | 29 |
 
 `complete` and `approximate` are reported separately and never merged. An
 approximation is a device that works with something missing — a Hue bulb whose
@@ -61,7 +75,7 @@ that mentions it, which is the eventual reach.
 | `m.bindCluster` | primitive | 4 | 26 |
 | `fz.ias_contact_alarm_1_report` | primitive | 4 | 11 |
 
-Distinct missing primitives: **1562**, so the tail is long and the
+Distinct missing primitives: **1559**, so the tail is long and the
 top of this table is where the leverage is.
 
 ## What this number is not

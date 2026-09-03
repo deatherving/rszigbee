@@ -26,6 +26,8 @@ use rszigbee_spec::tuya::{Datapoint, Value};
 
 use crate::capability::CapabilityId;
 use crate::command::DeviceCommand;
+use crate::device::DeviceInfo;
+use crate::runtime::behavior::{BehaviorRegistry, DecodeContext, EncodeContext};
 use crate::state::{StateChanges, StateValue};
 
 /// Converts reported datapoints into a capability state delta.
@@ -33,17 +35,81 @@ use crate::state::{StateChanges, StateValue};
 /// Datapoints the definition does not name are skipped, and their absence from
 /// the result is the signal that the table is incomplete.
 #[must_use]
-pub fn datapoints_to_state(definition: &Definition, datapoints: &[Datapoint]) -> StateChanges {
+pub fn datapoints_to_state(
+    definition: &Definition,
+    datapoints: &[Datapoint],
+    device: &DeviceInfo,
+    behaviors: &BehaviorRegistry,
+) -> StateChanges {
     let mut changes = StateChanges::new();
     for point in datapoints {
         let Some(entry) = definition.tuya_datapoints.iter().find(|d| d.dp == point.dp) else {
             continue;
         };
+
+        // The declarative path first, and only what it cannot express is
+        // delegated. A datapoint whose table entry names a behaviour has no
+        // declarative form to try.
+        if let TuyaKind::Behavior { name } = &entry.kind {
+            let Some(behavior) = behaviors.get(name) else {
+                // Named but not implemented. Nothing happens, which is
+                // visible in the coverage report rather than silent here.
+                continue;
+            };
+            let outcome = behavior.decode_datapoint(&DecodeContext {
+                device,
+                definition,
+                datapoint: point,
+                capability: &entry.name,
+            });
+            // `NotHandled` does not fall through to a generic best effort:
+            // there is nothing generic that could interpret this datapoint,
+            // and guessing is how a plausible-looking value gets invented.
+            if let Some(delegated) = outcome.handled() {
+                changes.merge(&delegated);
+            }
+            continue;
+        }
+
         if let Some(value) = convert(entry, &point.value) {
             changes.set(CapabilityId::from(entry.name.as_str()), value);
         }
     }
     changes
+}
+
+/// Lowers a command through a named behaviour, when one claims it.
+///
+/// Tried only after [`command_to_datapoint`] finds nothing: the declarative
+/// table is the first path, and a behaviour exists for what it cannot say.
+#[must_use]
+pub fn command_via_behavior(
+    definition: &Definition,
+    command: &DeviceCommand,
+    device: &DeviceInfo,
+    behaviors: &BehaviorRegistry,
+) -> Option<Vec<Datapoint>> {
+    // Only behaviours this definition actually names. A behaviour the
+    // definition did not ask for must not intercept its commands.
+    for entry in &definition.tuya_datapoints {
+        let TuyaKind::Behavior { name } = &entry.kind else {
+            continue;
+        };
+        let Some(behavior) = behaviors.get(name) else {
+            continue;
+        };
+        if let Some(points) = behavior
+            .encode_command(&EncodeContext {
+                device,
+                definition,
+                command,
+            })
+            .handled()
+        {
+            return Some(points);
+        }
+    }
+    None
 }
 
 /// Applies one datapoint's converter.
@@ -216,6 +282,22 @@ mod tests {
     use super::*;
     use rszigbee_devices::{Access, NumericSpec};
 
+    use crate::device::DeviceKind;
+
+    /// A device to pass as decode context in tests.
+    fn device() -> DeviceInfo {
+        DeviceInfo::new(
+            rszigbee_spec::ids::Ieee::new(0x1),
+            rszigbee_spec::ids::Nwk::new(0x1),
+            DeviceKind::EndDevice,
+        )
+    }
+
+    /// The behaviours a test runs with: the shipped set.
+    fn behaviors() -> BehaviorRegistry {
+        BehaviorRegistry::with_builtins()
+    }
+
     fn table(entries: Vec<TuyaDatapoint>) -> Definition {
         let mut d = Definition::new("TS0601_soil");
         d.match_rules.models = vec!["TS0601".into()];
@@ -249,6 +331,8 @@ mod tests {
                     value: Value::Number(213),
                 },
             ],
+            &device(),
+            &behaviors(),
         );
         assert_eq!(
             changes
@@ -277,6 +361,8 @@ mod tests {
                 dp: 99,
                 value: Value::Number(1),
             }],
+            &device(),
+            &behaviors(),
         );
         assert!(changes.is_empty());
     }
@@ -294,6 +380,8 @@ mod tests {
                 dp: 1,
                 value: Value::Bool(true),
             }],
+            &device(),
+            &behaviors(),
         );
         assert_eq!(
             changes.get(&CapabilityId::from("contact")),
@@ -310,7 +398,12 @@ mod tests {
             TuyaDatapoint::new(1, "state", TuyaKind::Bool { inverted: false }).writable(),
         ]);
         for value in [Value::Number(1), Value::Enum(1)] {
-            let changes = datapoints_to_state(&definition, &[Datapoint { dp: 1, value }]);
+            let changes = datapoints_to_state(
+                &definition,
+                &[Datapoint { dp: 1, value }],
+                &device(),
+                &behaviors(),
+            );
             assert_eq!(
                 changes.get(&CapabilityId::from("state")),
                 Some(&StateValue::Bool(true))
@@ -329,6 +422,8 @@ mod tests {
                 dp: 5,
                 value: Value::Str("warm".into()),
             }],
+            &device(),
+            &behaviors(),
         );
         assert!(changes.is_empty());
     }
@@ -349,6 +444,8 @@ mod tests {
                 dp: 4,
                 value: Value::Enum(7),
             }],
+            &device(),
+            &behaviors(),
         );
         assert_eq!(
             changes.get(&CapabilityId::from("mode")),
@@ -370,6 +467,8 @@ mod tests {
                 dp: 9,
                 value: Value::Bitmap(0b101),
             }],
+            &device(),
+            &behaviors(),
         );
         assert_eq!(
             changes.get(&CapabilityId::from("fault")),

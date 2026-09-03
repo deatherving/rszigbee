@@ -32,6 +32,9 @@ file-store = ["dep:serde", "dep:serde_json", "rszigbee-spec/serde", "tokio/fs", 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "test-util", "fs"] }
 tempfile = "3"
+# The behaviour-claim test reads the generated coverage fixture.
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = "1"
 
 [lints]
 workspace = true

@@ -58,5 +58,8 @@
   "seMetering": 1794,
   "haElectricalMeasurement": 2820,
   "haDiagnostic": 2821
- }
+ },
+ "behaviors": [
+  "tuya:thermostat-schedule"
+ ]
 }
