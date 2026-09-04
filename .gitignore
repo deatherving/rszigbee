@@ -10,3 +10,9 @@ __pycache__/
 
 # Local editing helper, not part of the project.
 /scripts/edit.py
+
+# cargo-fuzz working state. The targets are source; the corpus and any crash
+# artifacts are local findings, and a corpus grows without bound.
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage

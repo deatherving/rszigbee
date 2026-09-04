@@ -6,7 +6,11 @@ members = ["crates/*"]
 # so nothing in the published crates can accidentally depend on one. Listing a
 # path in `members` overrides `exclude`, so it must appear in only one of them —
 # it was in both, which silently made the exclusion do nothing.
-exclude = ["spikes/ezsp-probe"]
+# `fuzz` is excluded for a different reason: libfuzzer needs nightly, and
+# making the whole suite nightly-only to get coverage-guided fuzzing would be a
+# bad trade. The stable counterpart lives in rszigbee-spec's tests and runs on
+# every push.
+exclude = ["spikes/ezsp-probe", "fuzz"]
 
 [workspace.package]
 version = "0.0.1"

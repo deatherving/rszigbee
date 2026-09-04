@@ -55,6 +55,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --manifest-path spikes/ezsp-probe/Cargo.toml -- -D warnings
 
+  fuzz:
+    name: fuzz the codecs (non-blocking)
+    runs-on: ubuntu-latest
+    # Non-blocking on purpose. A fuzzer finding something is a real bug and
+    # should be looked at, but it is a *search*: a run that happens to explore
+    # further than the last one must not turn an unrelated pull request red.
+    # The stable, deterministic counterpart in rszigbee-spec's tests does gate
+    # the build.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # Nightly only here. libfuzzer requires it, and the rest of the suite
+      # deliberately stays on stable.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz
+      # Short runs: enough to catch a regression that crashes immediately,
+      # which is what a CI fuzz pass can honestly claim. Finding deep bugs
+      # takes hours and belongs in a dedicated run, not on every push.
+      - run: cargo fuzz run zcl -- -max_total_time=60
+      - run: cargo fuzz run zdo -- -max_total_time=60
+      - run: cargo fuzz run tuya -- -max_total_time=60
+
   licenses:
     name: dependency licences
     runs-on: ubuntu-latest

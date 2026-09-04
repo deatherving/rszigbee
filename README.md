@@ -125,7 +125,15 @@ these are the three that matter most:
    at system boundaries; persistence is behind a `file-store` feature so a
    caller using only `MemoryStore` links no JSON parser.
 3. **`rszigbee-spec` is sans-IO.** No tokio, no serial, no I/O. That is what
-   makes the codecs cheap to test and to fuzz.
+   makes the codecs cheap to test and to fuzz — and they are fuzzed, which for
+   a long time this line only implied. Four decoders read bytes a device chose
+   (ZCL frames and values, ZDO responses, Tuya datapoints), so a panic in one is
+   remote denial of service. `crates/rszigbee-spec/tests/fuzz_codecs.rs` runs on
+   stable in every CI pass: random input, every truncation of a captured frame,
+   single-byte mutations, and pathological lengths, with a control asserting the
+   corpus actually reaches the parsers rather than bouncing off validation.
+   `fuzz/` holds coverage-guided targets for longer runs — 34.7 million
+   executions across the three so far, no crashes.
 
 The other three keep `rszigbee-devices` from depending on the runtime (so
 definitions stay data the runtime interprets, not the reverse), keep

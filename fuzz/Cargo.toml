@@ -1,0 +1,47 @@
+# Coverage-guided fuzz targets for the decoders that read untrusted bytes.
+#
+# Excluded from the workspace so `cargo test --workspace` never needs nightly:
+# libfuzzer requires it, and making the whole suite nightly-only to get fuzzing
+# would be a bad trade. `crates/rszigbee-spec/tests/fuzz_codecs.rs` is the
+# stable counterpart and runs on every push; this is for longer, guided runs.
+#
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run zcl -- -max_total_time=300
+#   cargo +nightly fuzz run zdo
+#   cargo +nightly fuzz run tuya
+#
+# A crash is written to fuzz/artifacts/<target>/ and replayed with
+#   cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<hash>
+[package]
+name = "rszigbee-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rszigbee-spec = { path = "../crates/rszigbee-spec" }
+
+[[bin]]
+name = "zcl"
+path = "fuzz_targets/zcl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zdo"
+path = "fuzz_targets/zdo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuya"
+path = "fuzz_targets/tuya.rs"
+test = false
+doc = false
+bench = false
