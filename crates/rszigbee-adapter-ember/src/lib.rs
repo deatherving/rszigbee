@@ -57,6 +57,21 @@ pub use fingerprint::{SerialSettings, recognise, settings_for};
 /// stack needs APS fragmentation, which is not implemented yet.
 const MAX_APS_PAYLOAD: usize = 255;
 
+/// Hop limit for a multicast. Zero means the stack's default, which is the
+/// maximum for the network's depth; a hand-picked number would silently
+/// exclude devices further away than someone guessed.
+const GROUP_HOPS: u8 = 0;
+
+/// How far a multicast travels through nodes that are *not* group members.
+///
+/// A group's members are not necessarily neighbours, so a multicast has to be
+/// relayed by nodes with no interest in it. Zero would confine the message to
+/// members that happen to be in radio range.
+const NONMEMBER_RADIUS: u8 = 7;
+
+/// Hop limit for a broadcast. Zero is the stack default, again the maximum.
+const BROADCAST_RADIUS: u8 = 0;
+
 /// Silicon Labs' manufacturer code, used when the coordinator originates frames.
 const SILABS: ManufacturerCode = ManufacturerCode(0x1049);
 
@@ -132,21 +147,39 @@ impl EmberAdapter {
     /// Builds the APS frame for a ZCL request.
     ///
     /// `RETRY` and `ENABLE_ROUTE_DISCOVERY` are the options every working stack
-    /// sets for a unicast: without retry a single lost frame looks like an
+    /// sets for a *unicast*: without retry a single lost frame looks like an
     /// unreachable device, and without route discovery the first message to a
     /// device behind a router fails.
+    ///
+    /// Neither applies to a group or a broadcast, and both are actively wrong
+    /// there. APS retry waits for an acknowledgement, and a multicast or
+    /// broadcast is never acknowledged -- there is no single recipient to
+    /// acknowledge it -- so asking for one makes every send wait out a timeout
+    /// and report a failure that did not happen. Route discovery has no route
+    /// to discover.
     fn aps_frame_for(req: &ZclTx, sequence: u8) -> ApsFrame {
-        let mut options = ApsOptions::RETRY;
-        if !req.options.disable_recovery {
-            options |= ApsOptions::ENABLE_ROUTE_DISCOVERY;
-        }
+        let mut options = ApsOptions::empty();
+        let group = match req.dest {
+            Destination::Unicast { .. } => {
+                options |= ApsOptions::RETRY;
+                if !req.options.disable_recovery {
+                    options |= ApsOptions::ENABLE_ROUTE_DISCOVERY;
+                }
+                0
+            }
+            // The group id travels in the APS frame, not in a destination
+            // argument: `sendMulticast` takes no address and reads the group
+            // from here.
+            Destination::Group(group) => group.0,
+            Destination::Broadcast(_) => 0,
+        };
         ApsFrame::new(
             req.profile.0,
             req.cluster.0,
             req.source_endpoint.0,
             req.endpoint.0,
             options,
-            0,
+            group,
             sequence,
         )
     }
@@ -460,12 +493,6 @@ impl CoordinatorAdapter for EmberAdapter {
     }
 
     async fn send_zcl(&mut self, request: ZclTx) -> Result<Option<ZclRx>, AdapterError> {
-        let Destination::Unicast { nwk, .. } = request.dest else {
-            return Err(AdapterError::Unsupported(
-                "group and broadcast ZCL (implemented in a later phase)",
-            ));
-        };
-
         let tag = self.tag.next();
         let aps = EmberAdapter::aps_frame_for(&request, 0);
         // The EZSP payload type is a heapless vec capped at 255 bytes whose
@@ -481,15 +508,45 @@ impl CoordinatorAdapter for EmberAdapter {
             )));
         }
 
-        self.connection()?
-            .send_unicast(
-                EmberDestination::Direct(ezsp::ember::NodeId::from(nwk.raw())),
-                aps,
-                tag,
-                request.frame.iter().copied().collect(),
-            )
-            .await
-            .map_err(|e| map_ezsp(&e))?;
+        // The payload is collected inline in each branch rather than once into
+        // a binding, for the reason above: the type cannot be named here.
+        match request.dest {
+            Destination::Unicast { nwk, .. } => {
+                self.connection()?
+                    .send_unicast(
+                        EmberDestination::Direct(ezsp::ember::NodeId::from(nwk.raw())),
+                        aps,
+                        tag,
+                        request.frame.iter().copied().collect(),
+                    )
+                    .await
+                    .map_err(|e| map_ezsp(&e))?;
+            }
+            Destination::Group(_) => {
+                self.connection()?
+                    .send_multicast(
+                        aps,
+                        GROUP_HOPS,
+                        NONMEMBER_RADIUS,
+                        tag,
+                        request.frame.iter().copied().collect(),
+                    )
+                    .await
+                    .map_err(|e| map_ezsp(&e))?;
+            }
+            Destination::Broadcast(address) => {
+                self.connection()?
+                    .send_broadcast(
+                        ezsp::ember::NodeId::from(address.to_nwk().raw()),
+                        aps,
+                        BROADCAST_RADIUS,
+                        tag,
+                        request.frame.iter().copied().collect(),
+                    )
+                    .await
+                    .map_err(|e| map_ezsp(&e))?;
+            }
+        }
 
         // See the module docs: EZSP confirms delivery at the APS layer and
         // reports the device's reply separately, so there is no reply to return
@@ -706,6 +763,54 @@ mod tests {
                 .expect_err("must refuse mid-transition");
             assert!(e.to_string().contains("transient"), "{state:?} -> {e}");
         }
+    }
+
+    #[test]
+    fn a_group_frame_carries_the_group_id_and_no_retry() {
+        // The group id goes in the APS frame, because `sendMulticast` takes no
+        // address and reads it from there. Send it with the group unset and
+        // every multicast addresses group zero.
+        let req = ZclTx::group(
+            rszigbee_spec::ids::GroupId(0x1234),
+            EndpointId(1),
+            ClusterId(0x0006),
+            vec![0x01, 0x07, 0x01],
+        );
+        let aps = EmberAdapter::aps_frame_for(&req, 0);
+        assert_eq!(aps.group_id(), 0x1234, "the group must reach the APS frame");
+
+        // And no retry. A multicast is never acknowledged -- there is no single
+        // recipient to acknowledge it -- so asking makes every send wait out a
+        // timeout and then report a delivery failure that did not happen.
+        let opts = u16::from(aps.options());
+        assert_eq!(
+            opts & u16::from(ApsOptions::RETRY),
+            0,
+            "APS retry on a multicast waits for an ack that cannot come"
+        );
+    }
+
+    #[test]
+    fn a_broadcast_frame_carries_neither_retry_nor_route_discovery() {
+        let req = ZclTx::broadcast(
+            rszigbee_adapter::BroadcastAddress::All,
+            EndpointId(1),
+            ClusterId(0x0006),
+            vec![0x01, 0x07, 0x01],
+        );
+        let aps = EmberAdapter::aps_frame_for(&req, 0);
+        let opts = u16::from(aps.options());
+        assert_eq!(
+            opts & u16::from(ApsOptions::RETRY),
+            0,
+            "a broadcast is not acknowledged"
+        );
+        assert_eq!(
+            opts & u16::from(ApsOptions::ENABLE_ROUTE_DISCOVERY),
+            0,
+            "a broadcast has no route to discover"
+        );
+        assert_eq!(aps.group_id(), 0, "a broadcast is not a group");
     }
 
     #[test]

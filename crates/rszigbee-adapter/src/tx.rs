@@ -189,6 +189,42 @@ impl ZclTx {
         }
     }
 
+    /// A frame addressed to a group.
+    ///
+    /// The endpoint is still carried, because a group member acts on the frame
+    /// at the endpoint that joined the group; the address is the group.
+    #[must_use]
+    pub fn group(group: GroupId, endpoint: EndpointId, cluster: ClusterId, frame: Vec<u8>) -> Self {
+        Self {
+            dest: Destination::Group(group),
+            endpoint,
+            source_endpoint: EndpointId::HA,
+            profile: ProfileId::HA,
+            cluster,
+            frame,
+            options: TxOptions::default(),
+        }
+    }
+
+    /// A frame addressed to every device in a broadcast class.
+    #[must_use]
+    pub fn broadcast(
+        address: BroadcastAddress,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        frame: Vec<u8>,
+    ) -> Self {
+        Self {
+            dest: Destination::Broadcast(address),
+            endpoint,
+            source_endpoint: EndpointId::HA,
+            profile: ProfileId::HA,
+            cluster,
+            frame,
+            options: TxOptions::default(),
+        }
+    }
+
     /// Replaces the options.
     #[must_use]
     pub fn with_options(mut self, options: TxOptions) -> Self {
