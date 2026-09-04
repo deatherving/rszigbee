@@ -24,7 +24,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         &mut self,
         ieee: Ieee,
         cluster: ZdoClusterId,
-        build: Box<dyn FnOnce(u8) -> Vec<u8> + Send>,
+        build: Box<dyn FnOnce(u8, Nwk) -> Vec<u8> + Send>,
         reply: oneshot::Sender<Result<Vec<u8>, RuntimeError>>,
     ) {
         let Some(nwk) = self.devices.get(ieee).map(|e| e.info.nwk) else {
@@ -36,7 +36,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         // the value that goes on the wire is the value we correlate on.
         self.zdo_sequence = self.zdo_sequence.wrapping_add(1);
         let sequence = self.zdo_sequence;
-        let payload = build(sequence);
+        let payload = build(sequence, nwk);
 
         let tx = crate::adapter::ZdoTx {
             dest: crate::adapter::Destination::Unicast { ieee, nwk },

@@ -65,7 +65,7 @@ mod tuya;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee};
+use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee, Nwk};
 use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zdo::ZdoClusterId;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -210,7 +210,7 @@ enum Request {
     Zdo {
         ieee: Ieee,
         cluster: ZdoClusterId,
-        build: Box<dyn FnOnce(u8) -> Vec<u8> + Send>,
+        build: Box<dyn FnOnce(u8, Nwk) -> Vec<u8> + Send>,
         reply: oneshot::Sender<Result<Vec<u8>, RuntimeError>>,
     },
     Command {
@@ -613,9 +613,20 @@ impl Zigbee {
 
     /// Sends a ZDO request and waits for the matching response.
     ///
-    /// `build` receives the transaction sequence number, which the runtime
-    /// allocates. The response is matched on that number, so the sequence
-    /// cannot be chosen by a caller who then fails to encode it.
+    /// `build` receives the transaction sequence number and the device's short
+    /// address, both of which the runtime resolves. The response is matched on
+    /// the sequence number, so it cannot be chosen by a caller who then fails
+    /// to encode it.
+    ///
+    /// The short address is passed rather than left to the caller because most
+    /// ZDO requests carry a `NWKAddrOfInterest` naming the device they ask
+    /// about. A caller that has only an [`Ieee`] would have to resolve the
+    /// address a second time, and getting that wrong is close to invisible: a
+    /// request naming the wrong device is answered `INV_REQUESTTYPE` rather
+    /// than failing to send. This project shipped exactly that bug, hardcoding
+    /// the coordinator's address into every interview, and it went unnoticed
+    /// because the coordinator was the only device ever interviewed -- and its
+    /// address really is zero.
     ///
     /// # Errors
     ///
@@ -625,7 +636,7 @@ impl Zigbee {
         &self,
         ieee: Ieee,
         cluster: ZdoClusterId,
-        build: impl FnOnce(u8) -> Vec<u8> + Send + 'static,
+        build: impl FnOnce(u8, Nwk) -> Vec<u8> + Send + 'static,
     ) -> Result<Vec<u8>, RuntimeError> {
         self.ask(|reply| Request::Zdo {
             ieee,

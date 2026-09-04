@@ -18,7 +18,7 @@
 //! becomes [`InterviewState::Successful`] when the endpoints are actually known,
 //! because that is the part everything downstream needs.
 
-use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee, Nwk};
+use rszigbee_spec::ids::{AttrId, ClusterId, EndpointId, Ieee};
 use rszigbee_spec::zcl::ZclValue;
 use rszigbee_spec::zdo::{self, ZdoClusterId};
 use tracing::{debug, warn};
@@ -280,8 +280,8 @@ async fn node_descriptor(
     outcome: &mut InterviewOutcome,
 ) -> Result<(), RuntimeError> {
     match zigbee
-        .zdo(ieee, ZdoClusterId::NODE_DESC_REQ, move |seq| {
-            zdo::encode_node_desc_req(seq, Nwk::COORDINATOR)
+        .zdo(ieee, ZdoClusterId::NODE_DESC_REQ, move |seq, nwk| {
+            zdo::encode_node_desc_req(seq, nwk)
         })
         .await
         .map_err(|e| e.to_string())
@@ -330,8 +330,8 @@ async fn active_endpoints(
     outcome: &mut InterviewOutcome,
 ) -> Result<Vec<EndpointId>, RuntimeError> {
     let endpoints = match zigbee
-        .zdo(ieee, ZdoClusterId::ACTIVE_EP_REQ, move |seq| {
-            zdo::encode_active_ep_req(seq, Nwk::COORDINATOR)
+        .zdo(ieee, ZdoClusterId::ACTIVE_EP_REQ, move |seq, nwk| {
+            zdo::encode_active_ep_req(seq, nwk)
         })
         .await
         .map_err(|e| e.to_string())
@@ -367,8 +367,8 @@ async fn simple_descriptors(
 ) -> Result<(), RuntimeError> {
     for endpoint in endpoints {
         match zigbee
-            .zdo(ieee, ZdoClusterId::SIMPLE_DESC_REQ, move |seq| {
-                zdo::encode_simple_desc_req(seq, Nwk::COORDINATOR, endpoint)
+            .zdo(ieee, ZdoClusterId::SIMPLE_DESC_REQ, move |seq, nwk| {
+                zdo::encode_simple_desc_req(seq, nwk, endpoint)
             })
             .await
             .map_err(|e| e.to_string())

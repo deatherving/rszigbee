@@ -594,7 +594,7 @@ mod tests {
     async fn a_zdo_request_to_an_unknown_device_is_refused_before_the_radio() {
         let (zigbee, control) = runtime().await;
         let error = zigbee
-            .zdo(Ieee::new(0x99), ZdoClusterId::NODE_DESC_REQ, |seq| {
+            .zdo(Ieee::new(0x99), ZdoClusterId::NODE_DESC_REQ, |seq, _nwk| {
                 vec![seq]
             })
             .await
