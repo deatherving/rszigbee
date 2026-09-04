@@ -132,6 +132,17 @@ pub mod mqtt {
     pub use rszigbee_mqtt::*;
 }
 
+/// The running MQTT gateway.
+///
+/// The contract in [`mqtt`] plus a client and the loop that joins a runtime to
+/// a broker. Split from the contract so the part that has to be exactly right
+/// stays testable without one.
+#[cfg(feature = "gateway")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gateway")))]
+pub mod gateway {
+    pub use rszigbee_gateway::*;
+}
+
 // The types an application touches constantly, at the crate root so the common
 // case needs no module paths.
 pub use rszigbee_adapter::{

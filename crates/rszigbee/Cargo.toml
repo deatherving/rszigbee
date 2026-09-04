@@ -18,6 +18,7 @@ rszigbee-core.workspace = true
 rszigbee-adapter.workspace = true
 rszigbee-devices.workspace = true
 rszigbee-mqtt = { workspace = true, optional = true }
+rszigbee-gateway = { workspace = true, optional = true }
 rszigbee-spec.workspace = true
 rszigbee-adapter-ember = { workspace = true, optional = true }
 
@@ -38,6 +39,11 @@ bundled-devices = ["rszigbee-core/bundled-devices"]
 # is the primary path, and an embedded caller should not link a JSON serialiser
 # for a gateway mode it does not run.
 mqtt = ["dep:rszigbee-mqtt"]
+# The running gateway: the contract above plus an MQTT client and the loop that
+# joins a runtime to a broker. Separate from `mqtt` so a caller can use the
+# contract -- to build against a different client, or to test -- without
+# linking one.
+gateway = ["mqtt", "dep:rszigbee-gateway"]
 
 [lints]
 workspace = true
@@ -60,3 +66,9 @@ required-features = ["ember", "file-store"]
 [[example]]
 name = "ember_runtime"
 required-features = ["ember", "file-store"]
+
+[[example]]
+name = "mqtt_gateway"
+# All three: it drives an Ember coordinator through the gateway and persists,
+# so a build missing any one of them cannot compile it.
+required-features = ["ember", "file-store", "gateway"]

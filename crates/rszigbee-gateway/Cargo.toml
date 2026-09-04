@@ -1,0 +1,30 @@
+[package]
+name = "rszigbee-gateway"
+description = "MQTT gateway: drives an rszigbee runtime from a broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rszigbee-core.workspace = true
+rszigbee-mqtt.workspace = true
+rszigbee-spec = { workspace = true, features = ["std"] }
+# No default features, which means no TLS. Deliberate, and not just scope
+# trimming: rumqttc's default TLS stack pulls rustls-webpki 0.102, which has a
+# security advisory (RUSTSEC-2026-0049), and rustls-pemfile, which is
+# unmaintained (RUSTSEC-2025-0134). cargo-deny caught both. A Zigbee gateway
+# talks to a broker on the same host or the same LAN, so plain TCP is the
+# normal deployment; pulling a vulnerable TLS implementation to support a case
+# nobody here has is a bad trade. TLS belongs behind its own feature, with a
+# rustls version that is not flagged.
+rumqttc = { version = "0.24", default-features = false }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
