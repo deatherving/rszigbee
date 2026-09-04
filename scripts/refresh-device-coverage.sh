@@ -59,6 +59,13 @@ cp "$ROOT/scripts/emit-definitions.mjs" .
 node emit-definitions.mjs definitions.json "$FIXTURES/match-rules.json" \
   > "$ROOT/crates/rszigbee-devices/src/generated.rs"
 
+# Formatted here, not left to the author. A generator's output will not match
+# rustfmt by accident, and `cargo fmt --check` is a CI gate -- forgetting this
+# step put a formatting-only failure on main twice.
+echo "==> formatting the generated definitions"
+cd "$ROOT"
+cargo fmt -p rszigbee-devices
+
 echo "==> verifying"
 cd "$ROOT"
 cargo test -p rszigbee-devices --all-features

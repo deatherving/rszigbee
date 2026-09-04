@@ -9,6 +9,10 @@
 #
 #   ./scripts/verify.sh          everything
 #   ./scripts/verify.sh --fast   skip the slower duplicate clippy passes
+#
+# Check the EXIT CODE, do not grep the output. Piping this through a filter is
+# how a failure reached main a second time: the summary line was dropped and the
+# run looked clean. Non-zero means do not push.
 set -euo pipefail
 
 cd "$(cd "$(dirname "$0")/.." && pwd)"
