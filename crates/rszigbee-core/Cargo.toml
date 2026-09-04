@@ -23,7 +23,13 @@ serde = { workspace = true, optional = true, features = ["derive", "std"] }
 serde_json = { version = "1", optional = true }
 
 [features]
-default = []
+default = ["bundled-devices"]
+# The generated device definitions, used as the builder's default index.
+# Default-on because a runtime that resolves no device is not much use, and
+# because the alternative -- shipping them but defaulting to an empty index --
+# is what made the coverage report describe something callers never got. Off,
+# the default index is empty and a caller supplies its own.
+bundled-devices = ["rszigbee-devices/bundled"]
 # On-disk persistence. Pulls serde and serde_json, which is why it is a feature
 # and not a default: the boundary rule is that serialisation happens at system
 # edges, and a caller using only MemoryStore should not link a JSON parser.

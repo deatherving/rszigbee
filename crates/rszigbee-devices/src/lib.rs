@@ -49,6 +49,8 @@
 #![forbid(unsafe_code)]
 
 mod definition;
+#[cfg(feature = "bundled")]
+mod generated;
 mod index;
 mod matcher;
 
@@ -56,6 +58,8 @@ pub use definition::{
     Access, Binding, CustomAttribute, CustomCluster, CustomCommand, CustomParameter, Definition,
     Extend, NumericSpec, PowerSourceHint, Reporting, TuyaDatapoint, TuyaKind, WhiteLabel,
 };
+#[cfg(feature = "bundled")]
+pub use generated::{COUNT as BUNDLED_COUNT, definitions as bundled_definitions};
 pub use index::{DefinitionIndex, IndexError};
 
 /// Identifier types a definition is written in terms of.

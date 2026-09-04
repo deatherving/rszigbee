@@ -500,7 +500,7 @@ impl Zigbee {
             interview_on_join: true,
             registry: rszigbee_spec::zcl::registry::ClusterRegistry::with_builtins(),
             behaviors: BehaviorRegistry::with_builtins(),
-            definitions: rszigbee_devices::DefinitionIndex::new(),
+            definitions: default_definitions(),
         }
     }
 
@@ -772,5 +772,26 @@ impl Zigbee {
             .send(request)
             .await
             .map_err(|_| RuntimeError::Stopped)
+    }
+}
+
+/// The definition index a builder starts with.
+///
+/// With `bundled-devices` (on by default) this is every definition the build
+/// ships, so a device is recognised without the caller assembling a set.
+/// Without it the index is empty and the caller supplies its own via
+/// [`ZigbeeBuilder::definitions`].
+///
+/// Shipping definitions but defaulting to an empty index is the mistake this
+/// avoids: it made the coverage report describe capability that no caller
+/// actually received, and every test still passed.
+fn default_definitions() -> rszigbee_devices::DefinitionIndex {
+    #[cfg(feature = "bundled-devices")]
+    {
+        rszigbee_devices::DefinitionIndex::bundled()
+    }
+    #[cfg(not(feature = "bundled-devices"))]
+    {
+        rszigbee_devices::DefinitionIndex::new()
     }
 }

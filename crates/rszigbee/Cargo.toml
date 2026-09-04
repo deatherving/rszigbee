@@ -24,12 +24,15 @@ rszigbee-adapter-ember = { workspace = true, optional = true }
 # Ember (EZSP over ASHv2) is the default coordinator family: largest installed
 # base among new setups, and no firmware reflash, so a migration keeps the
 # existing network.
-default = ["ember", "file-store"]
+default = ["ember", "file-store", "bundled-devices"]
 ember = ["dep:rszigbee-adapter-ember"]
 # On-disk persistence. Default-on for the facade because an application that
 # depends on `rszigbee` almost always wants state to survive a restart; the
 # core crate keeps it optional so a caller can opt out entirely.
 file-store = ["rszigbee-core/file-store"]
+# The generated device definitions. Default-on: an application depending on
+# `rszigbee` wants its devices recognised without assembling a definition set.
+bundled-devices = ["rszigbee-core/bundled-devices"]
 
 [lints]
 workspace = true

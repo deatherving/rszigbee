@@ -50,9 +50,31 @@ pub struct DefinitionIndex {
 
 impl DefinitionIndex {
     /// An empty index.
+    ///
+    /// For an index of the definitions this build ships, use [`Self::bundled`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An index of every definition this build ships.
+    ///
+    /// Built once and then read-only. Insertion order is upstream's, because
+    /// resolution is first-wins and reordering would change which definition a
+    /// device gets.
+    ///
+    /// A definition that collides with one already indexed is skipped rather
+    /// than returned as an error: the generated set is checked by the
+    /// differential test, and making a caller handle a `Result` here would
+    /// suggest they had a decision to make about it.
+    #[cfg(feature = "bundled")]
+    #[must_use]
+    pub fn bundled() -> Self {
+        let mut index = Self::default();
+        for definition in crate::bundled_definitions() {
+            let _ = index.insert(definition);
+        }
+        index
     }
 
     /// How many definitions are indexed.

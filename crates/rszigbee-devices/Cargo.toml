@@ -25,7 +25,13 @@ features = ["derive", "std"]
 optional = true
 
 [features]
-default = []
+default = ["bundled"]
+
+# The generated definitions for every device upstream knows. On by default
+# because a device library that resolves nothing is not useful, and the whole
+# point of the transcoder is that these ship. Turn it off for a build that
+# supplies its own definitions and does not want to link 4,473 of them.
+bundled = []
 # Definitions loadable at runtime rather than compiled in. Off by default
 # because the built-in set is generated Rust, and an embedded caller should not
 # link a deserialiser it never uses.
