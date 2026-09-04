@@ -14,9 +14,13 @@ library with a typed API, and a Zigbee2MQTT-compatible MQTT gateway.
          Rust apps    Zigbee2MQTT-compatible MQTT
 ```
 
-> **Status: early.** The runtime, the coordinator adapter, the protocol codecs
-> and persistence work. The device-compatibility engine and the MQTT layer do
-> not exist yet. Not usable as a gateway. See [Status](#status).
+> **Status: early, but a real device works end to end.** The runtime, the
+> coordinator adapter, the protocol codecs, persistence and the
+> device-compatibility engine all work, and the whole chain — join, commission,
+> interview, resolve a definition, bind, configure reporting, receive typed
+> state, send a command that actuates — is confirmed against physical hardware.
+> The MQTT layer does not exist, so this is not usable as a gateway yet. See
+> [Status](#status).
 
 ## Status
 
@@ -27,9 +31,23 @@ Verified on a Sonoff ZBDongle-E (EFR32MG21, EmberZNet 7.4.4.0, EZSP v13):
 - Persistence surviving a restart
 - **The runtime itself**, not just the adapter: start, the device table, the
   ZDO interview through `Zigbee::interview`, ZCL transaction correlation, and a
-  clean stop — `ember_runtime`. It found two real bugs on its first run, which
-  is the argument for driving hardware through the runtime rather than through
-  the adapter
+  clean stop — `ember_runtime`
+- **A real device, end to end** (a SONOFF SWV-ZNU water valve): joining and
+  commissioning, the interview, definition resolution from the bundled set,
+  `Bind_req` and `configureReporting` (2 bound, 2 configured, 0 failed),
+  unsolicited reports arriving as typed state, and `DeviceCommand::SetOn`
+  actuating the valve with the device reporting its new state back
+- The network key and frame counter read back from the coordinator and
+  persisted, so a stored network can actually restore one
+
+Driving hardware through the runtime rather than the adapter is what found most
+of the bugs worth finding. Six of them only existed against real firmware: a
+trust-centre policy whose enum name means the opposite of its value on modern
+EmberZNet, a stack profile the NCP defaults to `0`, a malformed
+`importTransientKey` frame in a dependency, ZDO requests that asked about the
+coordinator instead of the device, definitions that were generated but never
+shipped, and an OTA query nothing answered. Each was invisible to a mock,
+because a mock is a model of what we already believed.
 
 Working against the mock coordinator, so verifiable anywhere:
 
@@ -83,7 +101,7 @@ The runtime consumes definitions, in both directions:
 
 No MQTT layer, no Home Assistant discovery.
 
-345 tests, none of which need hardware.
+363 tests, none of which need hardware.
 
 ## Crates
 
