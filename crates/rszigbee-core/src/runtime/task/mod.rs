@@ -318,7 +318,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         match event {
             AdapterEvent::DeviceJoined { ieee, nwk } => self.on_joined(ieee, nwk).await,
             AdapterEvent::DeviceLeft { ieee, nwk } => self.on_left(ieee, nwk).await,
-            AdapterEvent::Zcl(rx) => self.on_zcl(rx),
+            AdapterEvent::Zcl(rx) => self.on_zcl(rx).await,
             AdapterEvent::Zdo {
                 cluster,
                 nwk,

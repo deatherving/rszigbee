@@ -13,7 +13,7 @@
 
 use rszigbee_spec::codec::Writer;
 use rszigbee_spec::ids::{AttrId, ClusterId, CommandId, Ieee, ManufacturerCode};
-use rszigbee_spec::zcl::frame::{ZclFrame, ZclHeader};
+use rszigbee_spec::zcl::frame::{Direction, ZclFrame, ZclHeader};
 use rszigbee_spec::zcl::registry::ClusterRegistry;
 use rszigbee_spec::zcl::types::{ZclType, ZclValue, encode_value};
 
@@ -305,6 +305,44 @@ pub fn planned(tsn: u8, command: CommandId, payload: &[u8]) -> Vec<u8> {
     ZclFrame {
         header: ZclHeader::command(tsn, command),
         payload,
+    }
+    .encode()
+}
+
+/// `queryNextImageResponse` carrying `NO_IMAGE_AVAILABLE`.
+///
+/// A device with an OTA client asks the coordinator for an image, and keeps
+/// asking. A SONOFF valve on the bench sent `queryNextImageRequest` and, with
+/// nothing answering, went on sending it -- radio traffic and battery spent on
+/// a question nobody was going to reply to.
+///
+/// Answering "no image" is the correct response for a coordinator that is not
+/// an OTA server, and it is what makes the device stop asking. It is not a
+/// stub for a real OTA implementation: a coordinator with no image genuinely
+/// has this answer, and one that later serves images replaces the status
+/// rather than the decision to reply.
+///
+/// The remaining fields of the response -- manufacturer code, image type,
+/// version, size -- are omitted deliberately. The specification includes them
+/// only when the status is `SUCCESS`, and sending them with a failure status
+/// makes the frame longer than a client expects.
+///
+/// Sent as `ServerToClient` because in an OTA exchange the coordinator is the
+/// server, and with the default response disabled: a response does not need
+/// its own acknowledgement, and asking for one invites a frame back that
+/// nothing is waiting for.
+pub fn ota_no_image(tsn: u8) -> Vec<u8> {
+    /// `queryNextImageResponse`, from the OTA cluster's server side.
+    const QUERY_NEXT_IMAGE_RESPONSE: CommandId = CommandId(0x02);
+    /// ZCL status `NO_IMAGE_AVAILABLE`.
+    const NO_IMAGE_AVAILABLE: u8 = 0x98;
+
+    let mut header = ZclHeader::command(tsn, QUERY_NEXT_IMAGE_RESPONSE);
+    header.direction = Direction::ServerToClient;
+    header.disable_default_response = true;
+    ZclFrame {
+        header,
+        payload: &[NO_IMAGE_AVAILABLE],
     }
     .encode()
 }

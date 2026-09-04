@@ -204,6 +204,147 @@ mod tests {
         .expect("timed out waiting for an event")
     }
 
+    /// A joined device the runtime can address, and its event stream.
+    async fn with_joined_device() -> (Zigbee, MockHandle, EventStream) {
+        let (adapter, control, events) = MockAdapter::new();
+        let zigbee = Zigbee::builder(adapter, events, MemoryStore::new())
+            .interview_on_join(false)
+            .start()
+            .await
+            .expect("start");
+        let mut stream = zigbee.events();
+        control.emit(AdapterEvent::DeviceJoined {
+            ieee: Some(DEVICE),
+            nwk: Nwk::new(0x1111),
+        });
+        wait_for(&mut stream, |e| {
+            matches!(e, Event::DeviceJoined { .. }).then_some(())
+        })
+        .await;
+        (zigbee, control, stream)
+    }
+
+    /// A received ZCL frame from `DEVICE` on `cluster`.
+    fn rx(cluster: ClusterId, frame: Vec<u8>) -> ZclRx {
+        ZclRx {
+            ieee: Some(DEVICE),
+            nwk: Nwk::new(0x1111),
+            endpoint: EndpointId(1),
+            destination_endpoint: EndpointId(1),
+            cluster,
+            group: None,
+            was_broadcast: false,
+            link_quality: Some(180),
+            frame,
+        }
+    }
+
+    /// The OTA cluster.
+    const OTA: ClusterId = ClusterId(0x0019);
+
+    #[tokio::test]
+    async fn an_ota_image_query_is_answered_so_the_device_stops_asking() {
+        // A device with an OTA client asks its coordinator for firmware and
+        // keeps asking until something answers. A valve on the bench resent
+        // this every few seconds indefinitely, spending its own battery and the
+        // network's airtime on a question nothing was going to reply to.
+        //
+        // "No image available" is the truthful answer for a coordinator that is
+        // not an OTA server, not a placeholder for one.
+        let (zigbee, control, _stream) = with_joined_device().await;
+
+        // queryNextImageRequest: cluster-specific, client to server, command 1.
+        let request = vec![
+            0x01, 0x2a, 0x01, 0x00, 0x00, 0x86, 0x12, 0x0c, 0x20, 0x07, 0x10, 0x00, 0x00,
+        ];
+        control.emit(AdapterEvent::Zcl(rx(OTA, request)));
+
+        // Polled rather than read once: the answer is sent from the task, so a
+        // single read races it.
+        let sent = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let sent: Vec<_> = control
+                    .zcl_sent()
+                    .into_iter()
+                    .filter(|tx| tx.cluster == OTA)
+                    .collect();
+                if !sent.is_empty() {
+                    return sent;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the runtime should answer an OTA image query");
+
+        let frame = &sent[0].frame;
+        // Decoded rather than compared byte for byte, so the assertion says
+        // what matters instead of pinning an encoding.
+        let decoded = rszigbee_spec::zcl::frame::ZclFrame::decode(frame).expect("decodes");
+        assert_eq!(
+            decoded.header.command.0, 0x02,
+            "the answer must be queryNextImageResponse"
+        );
+        assert_eq!(
+            decoded.header.tsn, 0x2a,
+            "a response must carry the request's sequence number, or the device \
+             will not recognise it as the answer"
+        );
+        assert_eq!(
+            decoded.payload,
+            [0x98],
+            "status NO_IMAGE_AVAILABLE, and nothing after it: the spec includes \
+             the remaining fields only on success"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn an_ota_block_request_is_not_answered() {
+        // The negative control that matters. Answering every OTA command would
+        // pass the test above, and would mean claiming to serve firmware we do
+        // not have: a block request only makes sense after we advertised an
+        // image, which never happens.
+        let (zigbee, control, _stream) = with_joined_device().await;
+
+        // imageBlockRequest: same cluster, command 3.
+        let request = vec![
+            0x01, 0x2b, 0x03, 0x00, 0x86, 0x12, 0x0c, 0x20, 0x07, 0x10, 0x00, 0x00,
+        ];
+        control.emit(AdapterEvent::Zcl(rx(OTA, request)));
+
+        // Given time to get it wrong.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let ota_sent: Vec<_> = control
+            .zcl_sent()
+            .into_iter()
+            .filter(|tx| tx.cluster == OTA)
+            .collect();
+        assert!(
+            ota_sent.is_empty(),
+            "a block request must go unanswered, got {ota_sent:?}"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_frame_on_another_cluster_does_not_get_an_ota_answer() {
+        // The other half of the control: the responder must key on the cluster,
+        // not merely on a command id that happens to be 1. Command 1 is a
+        // perfectly ordinary command elsewhere -- `on` in genOnOff.
+        let (zigbee, control, _stream) = with_joined_device().await;
+
+        let on_command = vec![0x01, 0x2c, 0x01];
+        control.emit(AdapterEvent::Zcl(rx(ClusterId(0x0006), on_command)));
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            control.zcl_sent().is_empty(),
+            "an on/off command must not draw an OTA response"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
     #[tokio::test]
     async fn an_injected_reachability_policy_is_the_one_consulted() {
         // `ReachabilityPolicy` is documented as one of the four extension

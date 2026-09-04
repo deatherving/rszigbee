@@ -78,7 +78,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             .then_some(endpoint)
     }
 
-    pub(super) fn on_zcl(&mut self, rx: crate::adapter::ZclRx) {
+    pub(super) async fn on_zcl(&mut self, rx: crate::adapter::ZclRx) {
         // Everything downstream is keyed by permanent address, so a frame we
         // cannot attribute is a frame we cannot report. It is logged rather
         // than dropped silently, because the fix is a ZDO address lookup and
@@ -105,9 +105,6 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             entry.info.link_quality = rx.link_quality.or(entry.info.link_quality);
         }
 
-        // A frame carrying the transaction sequence of an outstanding read is
-        // that read's answer. Checked before the report path, so a read does
-        // not also surface as an unsolicited attribute report.
         // A frame carrying the transaction sequence of an outstanding read may
         // be that read's answer — but a sequence number alone is not enough to
         // decide, and treating it as enough was a real bug found on hardware.
@@ -147,6 +144,15 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         // `last_seen` and still produces an event, because it is proof the
         // device is alive and it is the only evidence anyone has for adding
         // support for it.
+        // Answered before the frame is reported, and reported either way. A
+        // device asking for a firmware image keeps asking until something
+        // replies, so silence costs it battery and the network airtime --
+        // observed on a valve that resent the same request every few seconds
+        // indefinitely.
+        if rx.cluster == OTA_CLUSTER {
+            self.answer_ota_query(ieee, &rx).await;
+        }
+
         match decode::zcl_message(&self.registry, ieee, &rx) {
             Ok(message) => {
                 self.touch(ieee, SystemTime::now(), LastSeenReason::Message);
@@ -332,4 +338,55 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             changes,
         });
     }
+    /// Tells a device asking for firmware that there is none.
+    ///
+    /// This coordinator is not an OTA server, and "no image available" is the
+    /// truthful answer rather than a placeholder. A coordinator that later
+    /// serves images changes the status it sends, not the decision to send one.
+    ///
+    /// Failure is logged and dropped. The device will ask again -- that is the
+    /// behaviour being addressed -- so a failed reply costs one more request,
+    /// and propagating it would turn an inbound frame into an error nobody
+    /// asked for.
+    async fn answer_ota_query(&mut self, ieee: Ieee, rx: &crate::adapter::ZclRx) {
+        let Ok(frame) = rszigbee_spec::zcl::frame::ZclFrame::decode(&rx.frame) else {
+            return;
+        };
+        // Only the image query. A block request means we advertised an image,
+        // which we never do, and answering one would be claiming to serve
+        // firmware we do not have.
+        if frame.header.command.0 != QUERY_NEXT_IMAGE_REQUEST
+            || frame.header.frame_type != rszigbee_spec::zcl::frame::FrameType::Specific
+        {
+            return;
+        }
+        let Some(nwk) = self.devices.get(ieee).map(|e| e.info.nwk) else {
+            return;
+        };
+
+        let tx = crate::adapter::ZclTx {
+            dest: crate::adapter::Destination::Unicast { ieee, nwk },
+            endpoint: rx.endpoint,
+            source_endpoint: EndpointId(1),
+            profile: rszigbee_spec::ids::ProfileId::HA,
+            cluster: OTA_CLUSTER,
+            // The request's own sequence number: a ZCL response is matched to
+            // its request by that, and a fresh one would leave the device
+            // waiting for an answer it never recognises.
+            frame: crate::runtime::encode::ota_no_image(frame.header.tsn),
+            options: crate::adapter::TxOptions::default(),
+        };
+        if let Err(e) = self.adapter.send_zcl(tx).await {
+            debug!(%ieee, error = %e, "could not answer the OTA image query");
+        } else {
+            debug!(%ieee, "told the device no firmware image is available");
+        }
+    }
 }
+
+/// The OTA cluster, where a device asks its coordinator for firmware.
+const OTA_CLUSTER: ClusterId = ClusterId(0x0019);
+
+/// `queryNextImageRequest`, the client-to-server command a device sends to ask
+/// whether an update exists.
+const QUERY_NEXT_IMAGE_REQUEST: u8 = 0x01;
