@@ -53,9 +53,15 @@ report ranks what to implement next by how many devices each missing primitive
 would unlock — which is how that number moved from 39.4%.
 
 Those definitions **ship**, as generated Rust, and are what the builder starts
-with: all 4,473 of them, carrying 8,242 capability references of which 500 are
+with: all 4,473 of them, carrying 8,350 capability references of which 373 are
 recorded as `Extend::Unsupported`. Turn off the default `bundled-devices`
 feature to start from an empty index and supply your own.
+
+Note that this and the 48.9% measure different things and will not move
+together. The coverage report classifies whole *definitions* by whether
+anything in them is unexpressed; this counts individual *capabilities*. A
+definition with one unsupported attribute out of ten is incomplete in the first
+number and 90% resolved in the second.
 
 That is worth stating explicitly because it was not true until recently. The
 transcoder produced a coverage report and no Rust, `DefinitionIndex::new()` —

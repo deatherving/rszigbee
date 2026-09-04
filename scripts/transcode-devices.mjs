@@ -383,6 +383,40 @@ function propNames(obj) {
  * wrong, which is worse than reporting the gap.
  */
 const NOT_LITERAL = Symbol('not-literal');
+/**
+ * Module-scope `const NAME = <literal>` bindings for the file being read.
+ *
+ * Upstream sometimes names a constant rather than writing it inline:
+ *
+ *   const attrSwitchType = 0x0001;
+ *   ... attributes: { customSwitchType: { ID: attrSwitchType, type: 0x30 } }
+ *
+ * Without resolving the name the attribute id is unknown, and because a custom
+ * cluster is all-or-nothing the whole cluster is refused -- 60 capability
+ * references were blocked by that one indirection. Repopulated per file, since
+ * these are file-scoped and a name reused across files must not leak.
+ *
+ * Only literals go in. A constant computed from something else stays unknown,
+ * which keeps this a lookup rather than an interpreter.
+ */
+let FILE_CONSTANTS = new Map();
+
+/** Collects module-scope constant bindings before a file is transcoded. */
+function collectConstants(sourceFile) {
+  const found = new Map();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const value = literal(declaration.initializer);
+      if (value !== NOT_LITERAL && (typeof value === 'number' || typeof value === 'string')) {
+        found.set(declaration.name.text, value);
+      }
+    }
+  }
+  return found;
+}
+
 function literal(node) {
   if (!node) return NOT_LITERAL;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
@@ -395,6 +429,10 @@ function literal(node) {
   // reports its own range, do not hard-code one", which is expressible. Left
   // as non-literal it was the single largest blocker in the report.
   if (ts.isIdentifier(node) && node.text === 'undefined') return null;
+  if (ts.isIdentifier(node)) {
+    const bound = FILE_CONSTANTS.get(node.text);
+    if (bound !== undefined) return bound;
+  }
   // `Zcl.DataType.SINGLE_PREC` and friends, resolved from herdsman's enums.
   if (ts.isPropertyAccessExpression(node)) {
     const resolved = ENUMS.get(node.getText().replace(/\s+/g, ''));
@@ -1038,6 +1076,41 @@ function transcode(def, file, line) {
 // Driver
 // ---------------------------------------------------------------------------
 
+/**
+ * Every `deviceAddCustomCluster` declaration anywhere in a file.
+ *
+ * Not the same as the ones attached to a definition. Upstream declares a
+ * manufacturer cluster once, inside a module-level helper --
+ *
+ *   heimanClusterSpecial: () => m.deviceAddCustomCluster("heimanClusterSpecial", {...})
+ *
+ * -- and then *names* it from many definitions. Walking only a definition's own
+ * extend array finds the reference and never the declaration, so the cluster id
+ * and its attribute ids are unknown and every capability on that cluster is
+ * emitted as unsupported. That accounted for most of the remaining unresolved
+ * references: `heimanClusterSpecial` alone blocked 35, and it is declared in
+ * the very file being read.
+ *
+ * The same extractor is reused, so a declaration harvested here is subject to
+ * the same all-or-nothing rule: a cluster whose attribute types cannot be
+ * evaluated exactly is refused rather than guessed.
+ */
+function customClustersIn(sourceFile) {
+  const found = [];
+  const walk = (node) => {
+    if (
+      ts.isCallExpression(node)
+      && node.expression.getText().endsWith('deviceAddCustomCluster')
+    ) {
+      const cluster = customCluster(node);
+      if (cluster) found.push(cluster);
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(sourceFile);
+  return found;
+}
+
 function definitionsIn(sourceFile) {
   let found = null;
   const walk = (node) => {
@@ -1064,10 +1137,26 @@ if (!srcDir || !fs.existsSync(srcDir)) {
 
 const irs = [];
 const reports = [];
+/** name -> declaration, harvested from every file. */
+const customClusterCatalogue = new Map();
+/** Names declared with two different ids, which must not be resolved. */
+const ambiguousClusters = new Set();
 for (const name of fs.readdirSync(srcDir).sort()) {
   if (!name.endsWith('.ts') || name === 'index.ts') continue;
   const file = path.join(srcDir, name);
   const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  FILE_CONSTANTS = collectConstants(sf);
+  for (const cluster of customClustersIn(sf)) {
+    const previous = customClusterCatalogue.get(cluster.name);
+    if (previous && previous.id !== cluster.id) {
+      // Two vendors using one name for different clusters. Resolving either
+      // would bind some device to the wrong cluster, which does not fail --
+      // it reports nothing while looking configured.
+      ambiguousClusters.add(cluster.name);
+    } else if (!previous) {
+      customClusterCatalogue.set(cluster.name, cluster);
+    }
+  }
   for (const def of definitionsIn(sf)) {
     const {line} = sf.getLineAndCharacterOfPosition(def.getStart());
     const {ir, report} = transcode(def, name, line + 1);
@@ -1075,6 +1164,12 @@ for (const name of fs.readdirSync(srcDir).sort()) {
     reports.push(report);
   }
 }
+
+for (const name of ambiguousClusters) customClusterCatalogue.delete(name);
+fs.writeFileSync(
+  'custom-clusters.json',
+  JSON.stringify([...customClusterCatalogue.values()]),
+);
 
 fs.writeFileSync('definitions.json', JSON.stringify(irs));
 fs.writeFileSync('coverage.json', JSON.stringify(reports));

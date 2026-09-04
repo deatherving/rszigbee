@@ -31,14 +31,25 @@
 import fs from 'node:fs';
 import {Zcl} from 'zigbee-herdsman';
 
-const [irPath, matchPath] = process.argv.slice(2);
+const [irPath, matchPath, customPath] = process.argv.slice(2);
 if (!irPath || !matchPath) {
-  process.stderr.write('usage: emit-definitions.mjs definitions.json match-rules.json\n');
+  process.stderr.write(
+    'usage: emit-definitions.mjs definitions.json match-rules.json [custom-clusters.json]\n',
+  );
   process.exit(2);
 }
 
 const irs = JSON.parse(fs.readFileSync(irPath, 'utf8'));
 const matchRules = JSON.parse(fs.readFileSync(matchPath, 'utf8'));
+/**
+ * Every custom cluster declared anywhere in upstream's source.
+ *
+ * Optional so the emitter still runs against an older transcoder output, but
+ * without it the clusters upstream declares in a shared helper and *names* from
+ * many definitions cannot be resolved at all -- which is most of what is left
+ * unresolved.
+ */
+const declaredClusters = customPath ? JSON.parse(fs.readFileSync(customPath, 'utf8')) : [];
 
 /**
  * Match rules, keyed by model.
@@ -87,6 +98,25 @@ const customClusters = (() => {
         if (typeof attrId === 'number' && typeof attrName === 'string') {
           byName.set(attrName, attrId);
         }
+      }
+    }
+  }
+  // Declarations found by scanning upstream's source, which reach the ones
+  // attached to no definition. Merged last and without overriding: a cluster
+  // an actual definition declared is the more specific answer.
+  for (const cluster of declaredClusters) {
+    if (typeof cluster.name !== 'string' || typeof cluster.id !== 'number') continue;
+    const previous = seen.get(cluster.name);
+    if (previous !== undefined && previous !== cluster.id) {
+      conflicting.add(cluster.name);
+    } else if (previous === undefined) {
+      seen.set(cluster.name, cluster.id);
+    }
+    let byName = attributes.get(cluster.name);
+    if (!byName) attributes.set(cluster.name, (byName = new Map()));
+    for (const [attrId, attrName] of cluster.attributes ?? []) {
+      if (typeof attrId === 'number' && typeof attrName === 'string' && !byName.has(attrName)) {
+        byName.set(attrName, attrId);
       }
     }
   }

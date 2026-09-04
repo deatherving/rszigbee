@@ -57,6 +57,7 @@ echo "==> wrote COVERAGE.md and $FIXTURES/claimed-primitives.json"
 echo "==> emitting generated Rust definitions"
 cp "$ROOT/scripts/emit-definitions.mjs" .
 node emit-definitions.mjs definitions.json "$FIXTURES/match-rules.json" \
+  custom-clusters.json \
   > "$ROOT/crates/rszigbee-devices/src/generated.rs"
 
 # Formatted here, not left to the author. A generator's output will not match
