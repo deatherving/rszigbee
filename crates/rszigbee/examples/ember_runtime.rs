@@ -39,7 +39,7 @@ use std::time::Duration;
 use rszigbee::adapter::{MismatchPolicy, NetworkConfig};
 use rszigbee::ember::EmberAdapter;
 use rszigbee::spec::ids::{AttrId, ClusterId, EndpointId};
-use rszigbee::{Event, FileStore, Zigbee};
+use rszigbee::{DeviceCommand, Event, FileStore, Zigbee};
 
 /// `genBasic`.
 const GEN_BASIC: ClusterId = ClusterId(0x0000);
@@ -54,10 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = args
         .iter()
         .find(|a| !a.starts_with("--"))
-        .ok_or("usage: ember_runtime <serial-path> [--form] [--permit-join]")?
+        .ok_or("usage: ember_runtime <serial-path> [--form] [--permit-join] [--actuate]")?
         .clone();
     let may_form = args.iter().any(|a| a == "--form");
     let permit_join = args.iter().any(|a| a == "--permit-join");
+    let actuate = args.iter().any(|a| a == "--actuate");
 
     let store = FileStore::open(
         std::env::var("RSZIGBEE_DATA").unwrap_or_else(|_| "./rszigbee-data".into()),
@@ -134,7 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Joining first when it is wanted. The coordinator self-tests below take
     // about twelve seconds, and a device's pairing window is finite — spending
     // that time before opening the window cost one attempt already.
-    if permit_join {
+    if actuate {
+        actuate_a_device(&zigbee).await;
+    } else if permit_join {
         println!("\n=== opening joining for 240s ===");
         zigbee.permit_join(Duration::from_secs(240), None).await?;
         println!("put the device in pairing mode now; events follow");
@@ -233,6 +236,92 @@ async fn interview_coordinator(zigbee: &Zigbee) {
         }
         Ok(Err(e)) => println!("  interview failed: {e}"),
         Err(_) => println!("  interview did not finish within 30s"),
+    }
+}
+
+/// Sends a real command to a real device, and watches for the result.
+///
+/// The last path in the runtime that had only ever run against the mock. The
+/// actuator direction is not symmetric with the sensor one: a command has to
+/// resolve a capability to a cluster and endpoint from the definition, encode a
+/// ZCL command rather than decode one, and reach a device that may be asleep.
+///
+/// Deliberately a separate flag. This turns a physical thing on -- the device
+/// this was written for is a water valve -- so it does not belong on a path
+/// anyone might run to look at a device table.
+async fn actuate_a_device(zigbee: &Zigbee) {
+    use std::io::Write as _;
+
+    let coordinator = zigbee.coordinator();
+    let devices = match zigbee.devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            println!("cannot list devices: {e}");
+            return;
+        }
+    };
+    let Some(target) = devices.iter().find(|d| d.ieee != coordinator) else {
+        println!("\n=== no device to actuate ===");
+        println!("Only the coordinator is known. Pair a device first with --permit-join.");
+        return;
+    };
+
+    println!("\n=== actuating {} ===", target.ieee);
+    println!(
+        "model {:?}, interview {:?}",
+        target.basic.model_id, target.interview
+    );
+
+    // Events first, so a report caused by the command is not missed between
+    // the send returning and the stream being subscribed.
+    let mut events = zigbee.events();
+
+    for on in [true, false] {
+        println!("\n-> SetOn({on})");
+        let _ = std::io::stdout().flush();
+        let started = std::time::Instant::now();
+        // Generous: the target is a sleepy end device, so the coordinator holds
+        // the frame until the device next polls its parent. A timeout here is
+        // not the same as a refusal, and the two are reported differently.
+        match tokio::time::timeout(
+            Duration::from_secs(20),
+            zigbee.send(target.ieee, DeviceCommand::SetOn(on)),
+        )
+        .await
+        {
+            Ok(Ok(outcome)) => println!("   accepted in {:?}: {outcome:?}", started.elapsed()),
+            Ok(Err(e)) => println!("   refused: {e}"),
+            Err(_) => println!("   no answer within 20s (a sleepy device may not have polled)"),
+        }
+        let _ = std::io::stdout().flush();
+
+        // Then watch for the device to say so itself. A command the coordinator
+        // accepted is not yet a valve that moved.
+        println!("   waiting for the device to report its new state...");
+        let _ = std::io::stdout().flush();
+        let deadline = tokio::time::sleep(Duration::from_secs(15));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                () = &mut deadline => {
+                    println!("   (no report within 15s)");
+                    break;
+                }
+                event = events.recv() => match event {
+                    Some(Event::StateChanged { ieee, changes, .. }) if ieee == target.ieee => {
+                        println!("   StateChanged: {changes:?}");
+                        let _ = std::io::stdout().flush();
+                        break;
+                    }
+                    Some(Event::ZclMessage(message)) if message.ieee == target.ieee => {
+                        println!("   raw: {:?}", message.kind);
+                        let _ = std::io::stdout().flush();
+                    }
+                    Some(_) => {}
+                    None => break,
+                },
+            }
+        }
     }
 }
 
