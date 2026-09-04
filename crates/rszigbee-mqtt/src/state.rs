@@ -44,7 +44,17 @@ impl DeviceState {
     /// compare in a test.
     pub fn apply(&mut self, changes: &StateChanges) -> String {
         for (id, value) in changes.iter() {
-            self.fields.insert(id.as_str().to_owned(), to_json(value));
+            let name = id.as_str();
+            // The capability name is needed, not just the value: whether a
+            // boolean publishes as `true` or as `"ON"` depends on which
+            // capability it is.
+            let rendered = match (value, boolean_rendering(name)) {
+                (StateValue::Bool(b), Some((on, off))) => {
+                    json!(if *b { on } else { off })
+                }
+                _ => to_json(value),
+            };
+            self.fields.insert(name.to_owned(), rendered);
         }
         let map: Map<String, Value> = self.fields.clone().into_iter().collect();
         Value::Object(map).to_string()
@@ -55,6 +65,37 @@ impl DeviceState {
     pub fn fields(&self) -> &BTreeMap<String, Value> {
         &self.fields
     }
+}
+
+/// How a boolean capability renders, for the capabilities where a bare
+/// `true`/`false` is not what the contract publishes.
+///
+/// Captured, not invented: the reference publishes `"state":"OFF"` and
+/// `"child_lock":"UNLOCK"`, never `false`. A consumer that switches on the
+/// string -- Home Assistant's MQTT switch does exactly that -- sees nothing it
+/// recognises in a boolean.
+///
+/// Upstream derives these from the definition's `value_on` and `value_off`,
+/// which this layer cannot see: it is given capability names and values, not
+/// definitions. A named table of the observed pairs is the honest version of
+/// that, and an unlisted capability keeps its boolean rather than being given a
+/// guessed spelling.
+const BOOLEAN_RENDERINGS: &[(&str, &str, &str)] = &[
+    ("state", "ON", "OFF"),
+    ("child_lock", "LOCK", "UNLOCK"),
+    ("window_open", "OPEN", "CLOSE"),
+    // No entry for `occupancy` and friends on purpose. A pair of "true"/"false"
+    // here would publish the *string* `"true"`, which is neither the boolean a
+    // consumer expects nor a word it switches on -- strictly worse than
+    // leaving it alone.
+];
+
+/// The strings a boolean capability renders as, if it has any.
+fn boolean_rendering(capability: &str) -> Option<(&'static str, &'static str)> {
+    BOOLEAN_RENDERINGS
+        .iter()
+        .find(|(name, _, _)| *name == capability)
+        .map(|(_, on, off)| (*on, *off))
 }
 
 /// A float as an integer, when it is exactly one and fits.
@@ -294,6 +335,64 @@ mod tests {
             "a second device must not inherit the first device's state"
         );
         assert_eq!(other[0].topic, "zigbee2mqtt/0x00124b0022189abc");
+    }
+
+    #[test]
+    fn a_boolean_state_publishes_as_on_or_off() {
+        // Found by running the gateway against a broker: we published
+        // `"state":true` where the captured reference payload says
+        // `"state":"OFF"`. Home Assistant's MQTT switch matches on the string,
+        // so a boolean is not something it recognises.
+        let mut store = StateStore::new(Topics::default());
+        let on = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("state", StateValue::Bool(true)),
+        });
+        assert_eq!(on[0].payload, r#"{"state":"ON"}"#);
+
+        let off = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("state", StateValue::Bool(false)),
+        });
+        assert_eq!(off[0].payload, r#"{"state":"OFF"}"#);
+
+        // The other observed one, with different words.
+        let locked = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("child_lock", StateValue::Bool(false)),
+        });
+        assert!(
+            locked[0].payload.contains(r#""child_lock":"UNLOCK""#),
+            "got {}",
+            locked[0].payload
+        );
+    }
+
+    #[test]
+    fn an_unlisted_boolean_capability_keeps_its_boolean() {
+        // The control. Giving every boolean a guessed spelling would be worse
+        // than leaving it as one: `true` is at least unambiguous, where an
+        // invented "ON" for a capability the reference publishes as a boolean
+        // is a difference nobody asked for.
+        let mut store = StateStore::new(Topics::default());
+        let published = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("some_new_flag", StateValue::Bool(true)),
+        });
+        assert_eq!(published[0].payload, r#"{"some_new_flag":true}"#);
+
+        // And a boolean must never come out as the *string* "true", which is
+        // what an over-eager entry in the rendering table would produce: it is
+        // neither the boolean a consumer expects nor a word it switches on.
+        assert!(
+            !published[0].payload.contains(r#""true""#),
+            "a boolean must not become a quoted string, got {}",
+            published[0].payload
+        );
     }
 
     #[test]
