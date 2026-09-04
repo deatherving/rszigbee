@@ -19,8 +19,9 @@ library with a typed API, and a Zigbee2MQTT-compatible MQTT gateway.
 > device-compatibility engine all work, and the whole chain — join, commission,
 > interview, resolve a definition, bind, configure reporting, receive typed
 > state, send a command that actuates — is confirmed against physical hardware.
-> The MQTT layer has its contract but no client, so this is not usable as a
-> gateway yet. See [Status](#status).
+> The MQTT gateway works against a real broker but lacks Home Assistant
+> discovery and most bridge requests, so it is not a drop-in replacement yet.
+> See [Status](#status).
 
 ## Status
 
@@ -99,10 +100,26 @@ The runtime consumes definitions, in both directions:
   `configureReporting`, and an arriving report becomes typed state — a caller
   sees `temperature: 21.37`, not cluster `0x0402` attribute `0x0000` = `2137`.
 
-The MQTT layer is **half built**: `rszigbee-mqtt` holds the Zigbee2MQTT
-contract — topics, payloads, and the translation both ways — and no MQTT
-client, so it is not yet a gateway you can point Home Assistant at. There is no
-Home Assistant discovery.
+The MQTT gateway **works**, and is confirmed against a real broker and a real
+device: an off-the-shelf `mosquitto_pub` opened and closed a valve through it,
+and `permit_join` round-tripped. `rszigbee-mqtt` holds the contract and no
+client; `rszigbee-gateway` holds the client and the loop. What a subscriber
+sees:
+
+```text
+zigbee2mqtt/bridge/state                 {"state":"online"}
+zigbee2mqtt/<ieee>/set                   {"state":"ON"}
+zigbee2mqtt/<ieee>                       {"battery":100,"state":"ON"}
+zigbee2mqtt/bridge/request/permit_join   {"time":30}
+zigbee2mqtt/bridge/response/permit_join  {"data":{"time":30},"status":"ok"}
+```
+
+Still missing: Home Assistant discovery, `bridge/devices` and `bridge/info`,
+friendly names, availability topics, and every `bridge/request` other than
+`permit_join` — an unimplemented one is answered with an error rather than
+silence. Only capabilities the device definition expresses are published, so a
+device whose definition is incomplete publishes less than the reference would.
+It is not a drop-in replacement yet.
 
 The contract is *observed*, not read. Zigbee2MQTT is GPL-3.0 and its source has
 deliberately not been read; every topic and payload was captured by running it
@@ -112,7 +129,7 @@ watching the valve open and close. An interface reproduced from its observable
 behaviour is a contract; a translation of an implementation would be a derived
 work.
 
-363 tests, none of which need hardware.
+390 tests, none of which need hardware.
 
 ## Crates
 
@@ -147,6 +164,7 @@ while let Some(event) = events.recv().await {
 | `rszigbee-core` | the runtime, device model, state, events, commands, reachability, persistence |
 | `rszigbee-devices` | declarative device definitions and the matcher |
 | `rszigbee-mqtt` | the Zigbee2MQTT topic and payload contract. Sans-IO |
+| `rszigbee-gateway` | the MQTT client and the loop that joins a runtime to a broker |
 
 ## Boundaries
 
