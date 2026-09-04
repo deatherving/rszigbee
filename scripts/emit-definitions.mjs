@@ -507,9 +507,12 @@ function definition(ir) {
 
 const rendered = irs.map(definition);
 
-// Chunked because one function with 4,473 struct literals in it makes rustc
-// slow in a way that is felt on every incremental build.
-const CHUNK = 250;
+// Chunked because rustc's cost per function is superlinear here. This is not
+// only about speed: at 250 definitions per function, rustc needed more memory
+// than a 4GB Raspberry Pi has and was killed by the OOM reaper, so the library
+// could not be built on exactly the class of machine it targets. Smaller
+// functions keep peak memory bounded.
+const CHUNK = Number(process.env.RSZIGBEE_DEFINITION_CHUNK ?? 40);
 const chunks = [];
 for (let i = 0; i < rendered.length; i += CHUNK) {
   chunks.push(rendered.slice(i, i + CHUNK));
