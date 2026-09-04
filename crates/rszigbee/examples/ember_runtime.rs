@@ -4,6 +4,8 @@
 //! cargo run -p rszigbee --example ember_runtime -- /dev/ttyUSB0
 //! cargo run -p rszigbee --example ember_runtime -- /dev/ttyUSB0 --form
 //! cargo run -p rszigbee --example ember_runtime -- /dev/ttyUSB0 --permit-join
+//! cargo run -p rszigbee --example ember_runtime -- /dev/ttyUSB0 --configure
+//! cargo run -p rszigbee --example ember_runtime -- /dev/ttyUSB0 --actuate
 //! ```
 //!
 //! `ember_selftest` drives the *adapter* directly. This drives the runtime, and
@@ -23,10 +25,21 @@
 //! arrives asynchronously as an adapter event, and the runtime matches it to
 //! the caller by transaction sequence.
 //!
-//! # What it cannot
+//! # What needed a second device, and has now had one
 //!
-//! Binding, attribute reporting and inbound reports need a device that is not
-//! the coordinator. Those stay unverified against hardware until one exists.
+//! Binding, attribute reporting, inbound reports and commands cannot be
+//! exercised against the coordinator alone. All four are now confirmed against
+//! a SONOFF SWV-ZNU water valve:
+//!
+//! * `--permit-join` — joins, commissions, interviews, and resolves a
+//!   definition from the bundled set.
+//! * `--configure` — binds and configures reporting. Two bindings, two
+//!   reporting configurations, no failures.
+//! * `--actuate` — `SetOn(true)` and `SetOn(false)`, each answered by the
+//!   device reporting its own new state back as typed `StateChanged`.
+//!
+//! `--actuate` moves something physical. The device this was written for is a
+//! water valve, which is why it is a flag and not part of the default path.
 //!
 //! # `--form` writes to the dongle
 //!
@@ -104,36 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("coordinator:   {}", zigbee.coordinator());
-    println!("start outcome: {:?}", zigbee.start_outcome());
-    match zigbee.network().await {
-        Ok(n) => println!(
-            "network:       pan 0x{:04x}, channel {}, nwk_update_id {}",
-            n.pan_id, n.channel, n.nwk_update_id
-        ),
-        Err(e) => println!("network:       unavailable ({e})"),
-    }
-
-    // The device table should contain the coordinator even on a fresh network:
-    // it is a node like any other, and without a record for it nothing can
-    // address it.
-    println!("\n=== device table ===");
-    let devices = zigbee.devices().await?;
-    for device in &devices {
-        println!(
-            "  {} nwk 0x{:04x} {:?} {:?}",
-            device.ieee,
-            device.nwk.raw(),
-            device.kind,
-            device.power_source
-        );
-    }
-    let coordinator = zigbee.coordinator();
-    if devices.iter().any(|d| d.ieee == coordinator) {
-        println!("  -> the coordinator has a record, so it can be addressed");
-    } else {
-        println!("  !! the coordinator has NO record; requests to it will be refused");
-    }
+    report_startup(&zigbee).await?;
 
     // Joining first when it is wanted. The coordinator self-tests below take
     // about twelve seconds, and a device's pairing window is finite — spending
@@ -242,6 +226,45 @@ async fn interview_coordinator(zigbee: &Zigbee) {
         Ok(Err(e)) => println!("  interview failed: {e}"),
         Err(_) => println!("  interview did not finish within 30s"),
     }
+}
+
+/// Prints what the coordinator came up as, and what it knows about.
+///
+/// Split out of `main` because it is the same preamble whichever mode runs, and
+/// because `main` had grown past the point where the mode dispatch was visible
+/// in it.
+async fn report_startup(zigbee: &Zigbee) -> Result<(), Box<dyn std::error::Error>> {
+    println!("coordinator:   {}", zigbee.coordinator());
+    println!("start outcome: {:?}", zigbee.start_outcome());
+    match zigbee.network().await {
+        Ok(n) => println!(
+            "network:       pan 0x{:04x}, channel {}, nwk_update_id {}",
+            n.pan_id, n.channel, n.nwk_update_id
+        ),
+        Err(e) => println!("network:       unavailable ({e})"),
+    }
+
+    // The device table should contain the coordinator even on a fresh network:
+    // it is a node like any other, and without a record for it nothing can
+    // address it.
+    println!("\n=== device table ===");
+    let devices = zigbee.devices().await?;
+    for device in &devices {
+        println!(
+            "  {} nwk 0x{:04x} {:?} {:?}",
+            device.ieee,
+            device.nwk.raw(),
+            device.kind,
+            device.power_source
+        );
+    }
+    let coordinator = zigbee.coordinator();
+    if devices.iter().any(|d| d.ieee == coordinator) {
+        println!("  -> the coordinator has a record, so it can be addressed");
+    } else {
+        println!("  !! the coordinator has NO record; requests to it will be refused");
+    }
+    Ok(())
 }
 
 /// Binds and configures reporting on a real device, printing every step.
