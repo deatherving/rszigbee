@@ -57,6 +57,17 @@ impl DeviceState {
     }
 }
 
+/// A float as an integer, when it is exactly one and fits.
+///
+/// Range-checked before the conversion, which is what makes it exact rather
+/// than truncating. A value outside `i64` keeps its float rendering rather
+/// than being clamped to something that is not the reading.
+fn integral(value: f64) -> Option<i64> {
+    #[allow(clippy::cast_possible_truncation)]
+    (value.is_finite() && value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_992.0)
+        .then_some(value as i64)
+}
+
 /// One `StateValue` as JSON.
 ///
 /// `Enum` becomes a string rather than a tagged object, because that is what
@@ -65,7 +76,12 @@ fn to_json(value: &StateValue) -> Value {
     match value {
         StateValue::Bool(b) => json!(b),
         StateValue::Int(i) => json!(i),
-        StateValue::Float(f) => json!(f),
+        // An integral float is published as an integer, because that is what
+        // was captured: `"battery":100`, not `100.0`. The runtime carries
+        // battery percentage as a float since the raw value is halved, and a
+        // consumer with strict JSON typing -- or one comparing payloads
+        // against a reference gateway's -- sees the difference.
+        StateValue::Float(f) => integral(*f).map_or_else(|| json!(f), |i| json!(i)),
         StateValue::Str(s) | StateValue::Enum(s) => json!(s),
         StateValue::List(items) => Value::Array(items.iter().map(to_json).collect()),
         StateValue::Map(entries) => Value::Object(
@@ -278,6 +294,34 @@ mod tests {
             "a second device must not inherit the first device's state"
         );
         assert_eq!(other[0].topic, "zigbee2mqtt/0x00124b0022189abc");
+    }
+
+    #[test]
+    fn an_integral_float_publishes_as_an_integer() {
+        // Found by running the gateway against a broker and diffing what a
+        // subscriber saw against the captured reference payloads: ours said
+        // `"battery":100.0` where the reference says `"battery":100`. The
+        // runtime carries battery as a float because the raw value is halved.
+        let mut store = StateStore::new(Topics::default());
+        let published = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("battery", StateValue::Float(100.0)),
+        });
+        assert_eq!(published[0].payload, r#"{"battery":100}"#);
+
+        // And a genuinely fractional value keeps its fraction: this is about
+        // matching the reference's rendering, not about rounding readings.
+        let published = store.translate(&Event::StateChanged {
+            ieee: DEVICE,
+            endpoint: None,
+            changes: StateChanges::new().with("temperature", StateValue::Float(21.37)),
+        });
+        assert!(
+            published[0].payload.contains("21.37"),
+            "a fractional reading must not be rounded, got {}",
+            published[0].payload
+        );
     }
 
     #[test]

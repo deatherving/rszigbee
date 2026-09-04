@@ -1222,12 +1222,22 @@ mod definition_integration {
             .expect("on/off is described, so it must work");
         assert_eq!(control.zcl_sent().len(), 1);
 
-        // But the part that is not expressed is refused, not approximated.
+        // But the part that is not expressed is refused, not approximated, and
+        // the error names what was refused. It used to be `NoDefinition`, which
+        // blamed a missing definition for a command this build does not
+        // implement -- misleading in general and actively wrong here, where the
+        // definition resolved fine.
         let error = zigbee
             .send(BULB, DeviceCommand::SetPreset("gradient".into()))
             .await
             .expect_err("an unexpressed capability must be refused");
-        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+        match error {
+            CommandError::InvalidValue { value, .. } => assert!(
+                value.contains("SetPreset"),
+                "the error must name the command, got {value}"
+            ),
+            other => panic!("expected the command to be named, got {other:?}"),
+        }
     }
 
     #[tokio::test]

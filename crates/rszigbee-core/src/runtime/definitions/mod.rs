@@ -88,7 +88,7 @@ mod tests {
 
     use crate::command::{Brightness, CommandError, DeviceCommand};
     use crate::device::{DeviceKind, EndpointInfo};
-    use crate::state::StateValue;
+    use crate::state::{StateChanges, StateValue};
 
     fn light_definition() -> Definition {
         let mut d = Definition::new("TRADFRI bulb");
@@ -205,7 +205,72 @@ mod tests {
             &DeviceCommand::SetTargetTemperature(21.0),
         )
         .expect_err("thermostats are not mapped yet");
-        assert!(matches!(error, CommandError::NoDefinition), "{error:?}");
+        // Previously `NoDefinition`, which was actively misleading: it blamed a
+        // missing definition for a command this build simply does not
+        // implement, and it sent a real investigation looking at definition
+        // resolution while the definition was fine. The error now names the
+        // command.
+        match error {
+            CommandError::InvalidValue { capability, value } => {
+                assert_eq!(capability.as_str(), "command");
+                assert!(
+                    value.contains("SetTargetTemperature"),
+                    "the error must name the command, got {value}"
+                );
+            }
+            other => panic!("expected the command to be named, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_general_set_form_lowers_to_the_specific_command() {
+        // Found by running the MQTT gateway against a broker. A `/set` of
+        // `{"state":"ON"}` becomes `DeviceCommand::Set`, which was never
+        // handled -- so the general form, the one the MQTT contract naturally
+        // produces, failed with "device has no resolved definition" while the
+        // definition was perfectly resolved.
+        let planned = plan_command(
+            &light_definition(),
+            &device(&[0x0006]),
+            &DeviceCommand::Set(StateChanges::new().with("state", StateValue::Str("ON".into()))),
+        )
+        .expect("a Set of state must plan the same frame as SetOn");
+
+        let direct = plan_command(
+            &light_definition(),
+            &device(&[0x0006]),
+            &DeviceCommand::SetOn(true),
+        )
+        .expect("SetOn plans");
+        assert_eq!(
+            planned.cluster, direct.cluster,
+            "the two forms must reach the same cluster"
+        );
+        assert_eq!(
+            planned.command, direct.command,
+            "and the same command: that is what 'one execution path' means"
+        );
+    }
+
+    #[test]
+    fn a_multi_capability_set_is_refused_rather_than_partly_applied() {
+        // One frame per plan, so a two-capability write cannot be expressed.
+        // Applying the first and dropping the second would leave the device in
+        // a state nobody asked for, which is worse than refusing.
+        let error = plan_command(
+            &light_definition(),
+            &device(&[0x0006]),
+            &DeviceCommand::Set(
+                StateChanges::new()
+                    .with("state", StateValue::Str("ON".into()))
+                    .with("brightness", StateValue::Int(128)),
+            ),
+        )
+        .expect_err("two capabilities in one Set must be refused");
+        assert!(
+            matches!(error, CommandError::InvalidValue { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
