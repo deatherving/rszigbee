@@ -1,0 +1,80 @@
+use core::array::IntoIter;
+use core::fmt::{self, Display};
+
+use le_stream::{FromLeStream, ToLeStream};
+
+pub use self::command::{Command, SleepMode};
+pub use self::response::{CallbackType, Response};
+
+mod command;
+mod response;
+
+/// The low byte of a frame header.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LowByte {
+    /// A command.
+    Command(Command),
+    /// A response.
+    Response(Response),
+}
+
+impl LowByte {
+    /// Returns `true` if the low byte is a command else `false`.
+    #[must_use]
+    pub const fn is_command(self) -> bool {
+        matches!(self, Self::Command(_))
+    }
+
+    /// Returns `true` if the low byte is a response else `false`.
+    #[must_use]
+    pub const fn is_response(self) -> bool {
+        matches!(self, Self::Response(_))
+    }
+}
+
+impl Display for LowByte {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Command(command) => write!(f, "Command({command})"),
+            Self::Response(response) => write!(f, "Response({response})"),
+        }
+    }
+}
+
+impl From<Command> for LowByte {
+    fn from(command: Command) -> Self {
+        Self::Command(command)
+    }
+}
+
+impl From<Response> for LowByte {
+    fn from(response: Response) -> Self {
+        Self::Response(response)
+    }
+}
+
+impl FromLeStream for LowByte {
+    fn from_le_stream<T>(stream: T) -> Option<Self>
+    where
+        T: Iterator<Item = u8>,
+    {
+        let byte = u8::from_le_stream(stream)?;
+
+        if byte & Command::IS_RESPONSE.bits() == 0 {
+            Some(Self::Command(Command::from_bits_truncate(byte)))
+        } else {
+            Some(Self::Response(Response::from_bits_truncate(byte)))
+        }
+    }
+}
+
+impl ToLeStream for LowByte {
+    type Iter = IntoIter<u8, 1>;
+
+    fn to_le_stream(self) -> Self::Iter {
+        match self {
+            Self::Command(command) => command.bits().to_le_stream(),
+            Self::Response(response) => response.bits().to_le_stream(),
+        }
+    }
+}

@@ -1,0 +1,1064 @@
+
+# cargo-vet audits file
+
+[[audits.android_system_properties]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.5 -> 0.1.6"
+notes = "AI-assisted: reviewed the complete 0.1.5 -> 0.1.6 diff. The Android property callback now uses the C ABI and Option<String>, avoids unwinding on invalid UTF-8, and corrects the callback return signature. Existing FFI pointer invariants are documented and no new ambient capabilities were introduced."
+
+[[audits.apis-saltans-aps]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.3.0"
+notes = "AI-assisted: reviewed diff 0.2.0 -> 0.3.0; crate source unchanged, only version/dependency bump to apis-saltans-core 0.4."
+
+[[audits.apis-saltans-aps]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.0 -> 0.4.0"
+notes = "AI-assisted: reviewed diff 0.3.0 -> 0.4.0; adds APS defragmentation over NWK envelopes and bytes::Bytes payloads, plus dependency bumps. Existing unsafe constructors remain invariant wrappers; no new filesystem/process/network capabilities."
+
+[[audits.apis-saltans-core]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.0 -> 0.4.0"
+notes = "AI-assisted: reviewed diff 0.3.0 -> 0.4.0; adds Cluster profile/manufacturer metadata and Profile::broadcast_endpoint helper. No unsafe code or ambient I/O/process/network changes."
+
+[[audits.apis-saltans-core]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.4.0 -> 0.5.0"
+notes = "AI-assisted: reviewed diff 0.4.0 -> 0.5.0; introduces IeeeAddress/Eui64 newtype around MacAddr8 and migrates address-bearing types to it. Existing unsafe endpoint constructor unchanged; no new ambient capabilities."
+
+[[audits.apis-saltans-hw]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = "AI-assisted: inspected source 0.6.0 and reviewed diff 0.3.0 -> 0.6.0; frame payloads move from Box<[u8]> to bytes::Bytes, events carry NWK envelopes, and NCP traits use IeeeAddress. Unsafe frame constructor/conversions remain metadata-payload invariant wrappers; no new ambient capabilities beyond caller-provided async driver."
+
+[[audits.apis-saltans-hw]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.3.0"
+notes = "AI-assisted: reviewed diff 0.2.0 -> 0.3.0; frame metadata now requires profile and stores Box<[u8]> payloads, plus dependency bumps. Existing unsafe constructors remain invariant-only wrappers with safe constructors; no new I/O/process/network capabilities."
+
+[[audits.apis-saltans-nwk]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.2.0"
+notes = "AI-assisted: inspected full source 0.2.0; no_std value types for NWK Envelope, Metadata, and Source with optional serde/le-stream derives. No unsafe code and no filesystem/process/network capabilities."
+
+[[audits.apis-saltans-zcl]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.3.0"
+notes = "AI-assisted: reviewed diff 0.2.0 -> 0.3.0; macro/trait changes move profile/manufacturer metadata onto Cluster implementations. No new ambient capabilities; existing unsafe APIs remain invariant/documentation helpers."
+
+[[audits.apis-saltans-zcl]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.0 -> 0.4.0"
+notes = "AI-assisted: reviewed diff 0.3.0 -> 0.4.0; migrates address fields to apis-saltans-core::IeeeAddress and adds TryFrom<APS Data<Bytes>> parsing. Existing unsafe constructors remain invariant wrappers; no new ambient capabilities."
+
+[[audits.apis-saltans-zdp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.3.0"
+notes = "AI-assisted: reviewed diff 0.2.0 -> 0.3.0; generated ZDP commands now expose Profile::Network metadata and delegate profile through enums. No unsafe code or ambient I/O/process/network changes."
+
+[[audits.apis-saltans-zdp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.0 -> 0.4.0"
+notes = "AI-assisted: reviewed diff 0.3.0 -> 0.4.0; migrates ZDP address fields to IeeeAddress and adds parsing from APS Data<Bytes> with endpoint/destination validation. No unsafe code or new ambient capabilities."
+
+[[audits.ashv2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "9.0.0"
+notes = "AI-assisted: inspected source 9.0.0 and reviewed diff 8.1.0 -> 9.0.0; actor handle/task split and frame/status refactors. Crate denies unsafe code; ambient capability remains caller-provided serial I/O through async traits."
+
+[[audits.ashv2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "10.0.0"
+notes = "AI-assisted: inspected source 10.0.0 and reviewed local registry diff 9.0.0 -> 10.0.0; public start API now returns Handle plus named Futures for caller-owned spawning, removes internal Tokio task ownership/Tasks shutdown API, updates async-serialport to 0.3.0, and reports not-connected/closed-channel payload sends instead of delayed requeueing. Crate continues to deny unsafe code; no new filesystem/process/network capabilities beyond caller-provided serial I/O."
+
+[[audits.ashv2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.7 -> 8.1.0"
+notes = "AI-assisted: reviewed major diff 1.2.7 -> 8.1.0; no new unsafe code in src (unsafe removed from old helper), protocol logic refactored to actor architecture"
+
+[[audits.ashv2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "8.1.0 -> 9.0.0"
+notes = "AI-assisted: reviewed diff 8.1.0 -> 9.0.0; actor handle/task split and frame/status refactors. Crate continues to deny unsafe code; ambient capability remains caller-provided serial I/O through async traits."
+
+[[audits.async-serialport]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.0"
+notes = "AI-assisted: inspected full source 0.1.0; tokio AsyncRead/AsyncWrite wrapper around a caller-provided serialport::SerialPort using channels and a background task. No unsafe code, filesystem, process, or network access beyond the wrapped serial port."
+
+[[audits.async-serialport]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.0"
+notes = "AI-assisted: inspected source 0.3.0 and reviewed local registry diff 0.1.0 -> 0.3.0; split now returns a public Worker future instead of spawning a Tokio task, the worker owns the serial port and polls the existing command channel directly, and Tokio runtime use moves to callers/tests. No unsafe code, build script, filesystem/network/process behavior, or new ambient capabilities were introduced."
+
+[[audits.autocfg]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.5.0 -> 1.5.1"
+notes = "AI-assisted: reviewed diff 1.5.0 -> 1.5.1"
+
+[[audits.bitflags]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.11.1 -> 2.13.0"
+notes = "AI-assisted: reviewed diff 2.11.1 -> 2.13.0"
+
+[[audits.bitflags]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.13.0 -> 2.13.1"
+notes = "AI-assisted: reviewed diff 2.13.0 -> 2.13.1; flag aggregation moves from runtime statements into an equivalent generated const, reducing LLVM IR. No new unsafe code or filesystem, process, or network capabilities."
+
+[[audits.bytes]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.12.0"
+notes = "AI-assisted: inspected source 1.12.0 and diff 1.11.1 -> 1.12.0; changes add BytesMut::extend_from_within/try_unsplit, fix zero-length get_int sign extension, and pass vtable data by value while preserving existing refcount/raw-pointer ownership invariants. No filesystem/process/network capabilities in library code."
+
+[[audits.bytes]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.12.1"
+notes = "AI-assisted: inspected source 1.12.1 and reviewed local registry diff 1.12.0 -> 1.12.1; changes allocate MaybeUninit<Shared> before initializing shared vector-backed buffer state, improving panic safety around existing raw-pointer/vector ownership invariants. No new filesystem/process/network/FFI behavior; unsafe remains localized to existing buffer allocation and ownership paths."
+
+[[audits.cc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.53 -> 1.2.65"
+notes = "AI-assisted: reviewed diff 1.2.53 -> 1.2.65"
+
+[[audits.cc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.65 -> 1.2.66"
+notes = "AI-assisted: reviewed diff 1.2.65 -> 1.2.66; target parsing/QNX support and kache wrapper additions. No new unsafe code paths; process execution remains expected compiler/probe behavior for cc build helper."
+
+[[audits.cc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.66 -> 1.2.67"
+notes = "AI-assisted: reviewed diff 1.2.66 -> 1.2.67; adds aarch64-unknown-linux-pauthtest target handling, requiring Clang and explicit PAUTHTEST_SYSROOT/PAUTHTEST_RESOURCE_DIR inputs for compiler/link flags, plus regenerated target data and clippy/nightly maintenance. No new unsafe code paths; process execution remains the existing compiler/probe behavior of the cc build helper."
+
+[[audits.cc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.67 -> 1.3.0"
+notes = "AI-assisted: reviewed diff 1.2.67 -> 1.3.0; adds Cargo trim-path inheritance by translating Cargo-provided remap values into individual compiler prefix-map arguments after fixed-argument capability probes. Values are passed directly as process arguments without shell interpretation; no new unsafe code, and process/environment access remains expected build-helper behavior."
+
+[[audits.cc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.3.0 -> 1.4.2"
+notes = "AI-assisted: reviewed the complete 1.3.0 -> 1.4.2 diff. Changes add clang-cl trim-path support, refine frame-pointer and ARM target flags, add target mappings, and update edition/MSRV. Environment values remain direct process arguments without shell interpretation; existing compiler, filesystem, process, and fcntl behavior is unchanged in scope, with no new unsafe paths."
+
+[[audits.chacha20]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.1"
+notes = "AI-assisted: reviewed diff 0.10.0 -> 0.10.1"
+
+[[audits.chacha20]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.10.1 -> 0.10.2"
+notes = "AI-assisted: reviewed the complete 0.10.1 -> 0.10.2 crate diff. The code change replaces an SSE4.1-only counter extraction in the SSE2 backend with shared Backend::new/save_ctr helpers and an unaligned 128-bit store of state words 12-15. Loads and stores remain within the 16-word state, preserve counter and nonce state, and use matching unaligned intrinsics. No new dependencies, build scripts, I/O, or ambient capabilities were introduced; remaining changes are version, lockfile, and changelog metadata."
+
+[[audits.chrono]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.4.45"
+notes = "AI-assisted: inspected full source 0.4.45"
+
+[[audits.const_env]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.5"
+notes = "AI-assisted: inspected full source 0.1.5"
+
+[[audits.const_env_impl]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.5"
+notes = "AI-assisted: inspected full source 0.1.5"
+
+[[audits.core-foundation]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.10.1"
+notes = "AI-assisted: inspected source 0.10.1; safe Rust wrappers over CoreFoundation FFI with reference-count ownership rules. Unsafe code is concentrated in CFType wrapping/release and platform API calls; no process/network capabilities."
+
+[[audits.cpufeatures]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.2.2"
+notes = "AI-assisted: inspected full source 0.2.2"
+
+[[audits.cpufeatures]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.2 -> 0.3.0"
+notes = "AI-assisted: reviewed diff 0.2.2 -> 0.3.0"
+
+[[audits.crc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "3.4.0"
+notes = "AI-assisted: inspected source 3.4.0; CRC calculation tables/algorithms only, crate forbids unsafe code and has no ambient filesystem/process/network capabilities."
+
+[[audits.crc-catalog]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "2.5.0"
+notes = "AI-assisted: inspected source 2.5.0; static CRC algorithm catalog data only, no unsafe code and no ambient filesystem/process/network capabilities."
+
+[[audits.crc-catalog]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.4.0 -> 2.5.0"
+notes = "AI-assisted: reviewed diff 2.4.0 -> 2.5.0"
+
+[[audits.enum-iterator]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "2.3.0"
+notes = "AI-assisted: inspected source 2.3.0; enum iteration traits and helpers only, no unsafe code and no ambient filesystem/process/network capabilities."
+
+[[audits.enum-iterator]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.1.0 -> 2.3.0"
+notes = "AI-assisted: reviewed diff 2.1.0 -> 2.3.0"
+
+[[audits.enum-iterator-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.5.0"
+notes = "AI-assisted: inspected source 1.5.0; proc-macro generates enum iterator implementations from parsed input. No unsafe code and no filesystem/process/network access."
+
+[[audits.enum-iterator-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.4.0 -> 1.5.0"
+notes = "AI-assisted: reviewed diff 1.4.0 -> 1.5.0"
+
+[[audits.ezsp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "5.2.0"
+notes = "AI-assisted: inspected local crate source for ezsp 5.2.0; crate denies unsafe code and the current changes are protocol frame/parameter macro and enum generation refactors."
+
+[[audits.ezsp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "7.0.0"
+notes = "AI-assisted: inspected local crate source for ezsp 7.0.0; NCP API, apis-saltans integration, parameter macros, and documentation updates. Existing unsafe surface is limited to explicitly marked unchecked value constructors; no new ambient capability surface beyond configured transport serial I/O and async channels."
+
+[[audits.ezsp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "7.3.0"
+notes = "AI-assisted: inspected local crate source for ezsp 7.3.0; updates cover apis-saltans conversion/NCP API changes, documentation, parameter macro callsite formatting, and dependency bumps. No new unsafe code; ambient capability surface remains configured serial transport plus async task/channel usage."
+
+[[audits.ezsp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "8.0.0"
+notes = "AI-assisted: inspected local crate source for ezsp 8.0.0; dependency/API updates introduce async-serialport and apis-saltans-hw 0.7 integration. No new unsafe code; ambient capability surface remains configured serial transport plus async task/channel usage."
+
+[[audits.ezsp]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.4 -> 1.5.0"
+notes = "AI-assisted: reviewed diff 1.2.4 -> 1.5.0"
+
+[[audits.find-msvc-tools]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.8 -> 0.1.9"
+notes = "AI-assisted: reviewed diff 0.1.8 -> 0.1.9"
+
+[[audits.find-msvc-tools]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.9 -> 0.1.10"
+notes = "AI-assisted: reviewed the complete 0.1.9 -> 0.1.10 diff. Changes update edition/MSRV, modernize equivalent iterator/control-flow code, and relocate unchanged MSBuild registry discovery code. Existing Windows registry, filesystem, and COM/FFI behavior is unchanged, with no new unsafe or process/network capabilities."
+
+[[audits.futures-core]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.32 -> 0.3.33"
+notes = "AI-assisted: reviewed diff 0.3.32 -> 0.3.33; only package version metadata changed. No code, unsafe, or ambient capability changes."
+
+[[audits.futures-core]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.33 -> 0.3.34"
+notes = "AI-assisted: reviewed the complete 0.3.33 -> 0.3.34 diff; only package version metadata changed. No code, unsafe, or ambient capability changes."
+
+[[audits.futures-sink]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.32"
+notes = "AI-assisted: inspected source 0.3.32; Sink trait definitions and blanket impls. Unsafe use is limited to Pin projection in impls for pinned containers; no ambient filesystem/process/network capabilities."
+
+[[audits.futures-sink]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.32 -> 0.3.33"
+notes = "AI-assisted: reviewed diff 0.3.32 -> 0.3.33; only package version metadata changed. No code, unsafe, or ambient capability changes."
+
+[[audits.futures-task]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.31"
+notes = "AI-assisted: inspected full source 0.3.31"
+
+[[audits.futures-task]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.31 -> 0.3.32"
+notes = "AI-assisted: reviewed diff 0.3.31 -> 0.3.32"
+
+[[audits.futures-task]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.32 -> 0.3.33"
+notes = "AI-assisted: reviewed diff 0.3.32 -> 0.3.33; updates pointer-atomic cfg gates and re-exports alloc::task::Wake where supported. No new unsafe code or filesystem, process, or network capabilities."
+
+[[audits.futures-task]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.33 -> 0.3.34"
+notes = "AI-assisted: reviewed the complete 0.3.33 -> 0.3.34 diff; aside from version metadata it adds an inline attribute to the existing no-op RawWaker clone callback. No behavior, unsafe invariant, or ambient capability changes."
+
+[[audits.futures-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.21"
+notes = "AI-assisted: inspected full source 0.3.21"
+
+[[audits.futures-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.21 -> 0.3.32"
+notes = "AI-assisted: reviewed diff 0.3.21 -> 0.3.32"
+
+[[audits.futures-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.32 -> 0.3.33"
+notes = "AI-assisted: reviewed diff 0.3.32 -> 0.3.33; adds portable atomic/Arc support, corrects IterPinRef's Send bound to Fut: Sync, releases removed FuturesUnordered tasks through the existing Arc ownership path, and fixes futures 0.1 waker deallocation using a transparent UnsafeCell<Waker> wrapper. The wrapper preserves allocation layout, reconstructs the original Box<Waker>, and its Send/Sync impls rely on Waker being Send + Sync; no new ambient capabilities."
+
+[[audits.futures-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.33 -> 0.3.34"
+notes = "AI-assisted: reviewed the complete 0.3.33 -> 0.3.34 diff. Changes update futures dependency versions, skip incompatible Miri doctests, and inline existing RawWaker clone callbacks. Existing raw-waker ownership and refcount invariants are unchanged; no ambient capabilities were added."
+
+[[audits.getrandom]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.4.3"
+notes = "AI-assisted: inspected full source 0.4.3"
+
+[[audits.hash32]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.1"
+notes = "AI-assisted: inspected source 0.3.1; no_std 32-bit hashing traits/adapters. No unsafe code and no ambient filesystem/process/network capabilities."
+
+[[audits.heapless]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.9.3"
+notes = "AI-assisted: inspected source 0.9.3; fixed-capacity no_std collections. Unsafe code is internal storage/queue management with bounds/capacity checks; no ambient filesystem/process/network capabilities."
+
+[[audits.heapless]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.9.1 -> 0.9.3"
+notes = "AI-assisted: reviewed diff 0.9.1 -> 0.9.3"
+
+[[audits.iana-time-zone]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.64 -> 0.1.65"
+notes = "AI-assisted: reviewed diff 0.1.64 -> 0.1.65"
+
+[[audits.id-arena]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.2.1 -> 2.3.0"
+notes = "AI-assisted: reviewed diff 2.2.1 -> 2.3.0"
+
+[[audits.intx]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.0"
+notes = "AI-assisted: inspected full source 0.1.0"
+
+[[audits.io-kit-sys]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.4.1"
+notes = "AI-assisted: inspected source 0.4.1; raw macOS IOKit/CoreFoundation FFI declarations used for device enumeration. Unsafe surface is FFI declarations only; no process/network capabilities."
+
+[[audits.js-sys]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.77 -> 0.3.102"
+notes = "AI-assisted: reviewed diff 0.3.77 -> 0.3.102"
+
+[[audits.js-sys]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.102 -> 0.3.103"
+notes = "AI-assisted: reviewed diff 0.3.102 -> 0.3.103"
+
+[[audits.js-sys]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.3.103 -> 0.3.104"
+notes = "AI-assisted: reviewed the complete 0.3.103 -> 0.3.104 diff. Task polling now uses drop guards to break Rc cycles on Rust or JavaScript unwinding, multithread callbacks explicitly assert owned unwind safety, and JsNullable covariance is added. The cleanup improves failure safety and adds no filesystem, process, or network capabilities."
+
+[[audits.le-stream]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "5.0.0 -> 10.1.2"
+notes = "AI-assisted: reviewed diff 5.0.0 -> 10.1.2"
+
+[[audits.le-stream]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "10.1.2 -> 10.1.4"
+notes = "AI-assisted: reviewed diff 10.1.2 -> 10.1.4; mostly documentation/tests clarifying collection semantics and feature coverage. No unsafe code or ambient I/O/process/network changes."
+
+[[audits.le-stream-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.3.2 -> 1.3.8"
+notes = "AI-assisted: reviewed diff 1.3.2 -> 1.3.8"
+
+[[audits.le-stream-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.3.8 -> 1.3.10"
+notes = "AI-assisted: reviewed diff 1.3.8 -> 1.3.10; derive docs updated and enum ToLeStream generation now uses explicit discriminants instead of unsafe repr pointer reads. No new ambient capabilities."
+
+[[audits.libudev]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.0"
+notes = "AI-assisted: inspected source 0.3.0; safe wrapper over libudev for Linux device enumeration. Unsafe code is FFI boundary/reference handling; ambient capability is read-only device metadata enumeration."
+
+[[audits.libudev-sys]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.4"
+notes = "AI-assisted: inspected source 0.1.4; libudev FFI declarations and pkg-config build discovery. No library runtime process/network access; build script behavior is expected pkg-config probing."
+
+[[audits.log]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.4.29 -> 0.4.32"
+notes = "AI-assisted: reviewed diff 0.4.29 -> 0.4.32"
+
+[[audits.log]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.4.32 -> 0.4.33"
+notes = "AI-assisted: reviewed diff 0.4.32 -> 0.4.33"
+
+[[audits.macaddr]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.0.1"
+notes = "AI-assisted: inspected source 1.0.1; MAC address parsing/formatting value types, crate forbids unsafe code and has no ambient filesystem/process/network capabilities."
+
+[[audits.mach2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.4.3"
+notes = "AI-assisted: inspected source 0.4.3; raw macOS Mach FFI bindings. Unsafe surface is platform FFI declarations/wrappers; no process/network capabilities beyond exposed OS APIs."
+
+[[audits.memchr]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.7.5 -> 2.8.2"
+notes = "AI-assisted: reviewed diff 2.7.5 -> 2.8.2"
+
+[[audits.nix]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.26.4"
+notes = "AI-assisted: inspected source 0.26.4; Unix syscall wrappers used transitively by serialport. Unsafe code is FFI/memory layout handling around OS APIs; no hidden process/network behavior beyond explicitly exposed nix APIs."
+
+[[audits.num-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.4.2 -> 0.5.1"
+notes = "AI-assisted: reviewed the complete 0.4.2 -> 0.5.1 diff; runtime procedural-macro implementation is unchanged. Changes update documentation/package metadata, raise MSRV to 1.71, and upgrade syn from 2 to 3. No unsafe code, build script, filesystem, process, network, or other ambient capabilities were introduced."
+
+[[audits.num_enum]]
+who = "Richard Neumann <neumann@paulmann.de>"
+criteria = "safe-to-deploy"
+delta = "0.7.2 -> 0.7.6"
+notes = "AI-assisted: Reviewed the full 0.7.2-to-0.7.6 diff. Changes update metadata and tests and select the runtime Error implementation using rustversion; no unsafe code or ambient capabilities were introduced."
+
+[[audits.num_enum_derive]]
+who = "Richard Neumann <neumann@paulmann.de>"
+criteria = "safe-to-deploy"
+delta = "0.7.2 -> 0.7.6"
+notes = "AI-assisted: Reviewed the full 0.7.2-to-0.7.6 proc-macro diff. Changes add explicit crate-path support, improve catch-all filtering and byte-literal parsing, and strengthen attribute validation; no unsafe code or ambient capabilities were introduced."
+
+[[audits.once_cell]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.12.0"
+notes = "AI-assisted: inspected full source 1.12.0"
+
+[[audits.once_cell]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.12.0 -> 1.21.4"
+notes = "AI-assisted: reviewed diff 1.12.0 -> 1.21.4"
+
+[[audits.pin-project-lite]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.16 -> 0.2.17"
+notes = "AI-assisted: reviewed diff 0.2.16 -> 0.2.17"
+
+[[audits.pkg-config]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.3.33"
+notes = "AI-assisted: inspected source 0.3.33; build-time pkg-config probing via environment/filesystem/process execution as advertised. No runtime library capabilities."
+
+[[audits.proc-macro2]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.0.106 -> 1.0.107"
+notes = "AI-assisted: reviewed diff 1.0.106 -> 1.0.107; raises MSRV, updates docs and CI, uses equivalent Option::is_some_and parsing logic, and simplifies fallback span invalidation control flow. No new unsafe code or ambient capabilities."
+
+[[audits.r-efi]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "6.0.0"
+notes = "AI-assisted: inspected full source 6.0.0"
+
+[[audits.rand]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.10.2"
+notes = "AI-assisted: inspected full source 0.10.2; no build script or runtime process/network/filesystem access in library code. Unsafe is limited to documented RNG buffer fills, thread-local UnsafeCell access, SIMD/transmute distribution support, and valid UTF-8/char construction."
+
+[[audits.rand_core]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.1"
+notes = "AI-assisted: reviewed diff 0.10.0 -> 0.10.1"
+
+[[audits.repr-discriminant]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "3.0.1"
+notes = "AI-assisted: inspected full source 3.0.1"
+
+[[audits.repr-discriminant-derive]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "2.0.0"
+notes = "AI-assisted: inspected full source 2.0.0"
+
+[[audits.rustversion]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.0.23"
+notes = "AI-assisted: inspected source 1.0.23 and diff 1.0.22 -> 1.0.23; build script still only invokes configured rustc/wrapper with --version, writes generated data under OUT_DIR, and emits cfgs. No unsafe code; ambient process/filesystem use is expected build-script behavior."
+
+[[audits.scopeguard]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "1.2.0"
+notes = "AI-assisted: inspected source 1.2.0; scope guard/drop helper only, no unsafe code and no ambient filesystem/process/network capabilities."
+
+[[audits.serialport]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "4.9.0"
+notes = "AI-assisted: inspected source 4.9.0; cross-platform serial port enumeration/configuration/I/O. Unsafe code is platform FFI to libc, Windows SetupAPI, registry, and IOKit around advertised serial operations; no unexpected process/network capabilities."
+
+[[audits.serialport]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "4.7.2 -> 4.9.0"
+notes = "AI-assisted: reviewed diff 4.7.2 -> 4.9.0"
+
+[[audits.shlex]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.3.0 -> 2.0.1"
+notes = "AI-assisted: reviewed diff 1.3.0 -> 2.0.1"
+
+[[audits.silizium]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.0.5 -> 2.1.0"
+notes = "AI-assisted: reviewed major diff 1.0.5 -> 2.1.0; no unsafe code paths, primarily status/enum API and dependency updates"
+
+[[audits.slab]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.4.11 -> 0.4.12"
+notes = "AI-assisted: reviewed diff 0.4.11 -> 0.4.12"
+
+[[audits.stable_deref_trait]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.2.0 -> 1.2.1"
+notes = "AI-assisted: reviewed diff 1.2.0 -> 1.2.1"
+
+[[audits.strum]]
+who = "Richard Neumann <neumann@paulmann.de>"
+criteria = "safe-to-deploy"
+delta = "0.27.2 -> 0.28.0"
+notes = "AI-assisted: Reviewed the full 0.27.2-to-0.28.0 diff. Changes are limited to dependency and MSRV updates, documentation, and ParseError formatting through core::fmt; no unsafe code or new runtime capabilities were introduced."
+
+[[audits.strum_macros]]
+who = "Richard Neumann <neumann@paulmann.de>"
+criteria = "safe-to-deploy"
+delta = "0.27.2 -> 0.28.0"
+notes = "AI-assisted: Reviewed the full 0.27.2-to-0.28.0 proc-macro diff. Changes refine generated enum parsing and discriminants, qualify core paths, add automatically_derived annotations, and improve infallible parsing and defaults; no unsafe code or ambient capabilities were introduced."
+
+[[audits.thiserror]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.0.16 -> 2.0.17"
+notes = "AI-assisted: reviewed diff 2.0.16 -> 2.0.17"
+
+[[audits.thiserror]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.0.17 -> 2.0.18"
+notes = "AI-assisted: reviewed diff 2.0.17 -> 2.0.18"
+
+[[audits.thiserror-impl]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.0.16 -> 2.0.17"
+notes = "AI-assisted: reviewed diff 2.0.16 -> 2.0.17"
+
+[[audits.thiserror-impl]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "2.0.17 -> 2.0.18"
+notes = "AI-assisted: reviewed diff 2.0.17 -> 2.0.18"
+
+[[audits.tokio-stream]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.18"
+notes = "AI-assisted: inspected source 0.1.18 and diff 0.1.17 -> 0.1.18; async Stream adapters/wrappers. Unsafe is limited to marker impls for empty streams; no ambient filesystem/process/network capabilities."
+
+[[audits.tokio-stream]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.18 -> 0.1.19"
+notes = "AI-assisted: reviewed the complete 0.1.18 -> 0.1.19 source diff. Changes add standard-collection support, fused adaptors, JoinSetStream, cooperative scheduling, and stream correctness fixes. No unsafe code changes or new ambient filesystem, process, or network capabilities; existing caller-provided I/O wrappers are unchanged."
+
+[[audits.tokio-task-pool]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.8"
+notes = "AI-assisted: inspected full source 0.1.8"
+
+[[audits.tokio-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.7.18"
+notes = "AI-assisted: inspected source 0.7.18 and diff 0.7.16 -> 0.7.18; codecs, cancellation utilities, sync helpers, and UDP framing. Unsafe code is internal pin/projection/buffer management; ambient I/O only through caller-provided tokio I/O types."
+
+[[audits.tokio-util]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.7.18 -> 0.7.19"
+notes = "AI-assisted: reviewed the complete 0.7.18 -> 0.7.19 source diff. Changes add vectored-write, task, cancellation-token, codec, and delay-queue APIs/fixes. Reviewed new unsafe lifetime-preserving IoSlice advancement, ManuallyDrop extraction, and libc memchr pointer arithmetic; invariants are upheld. No new ambient filesystem, process, or network capabilities."
+
+[[audits.unescaper]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.1.10"
+notes = "AI-assisted: inspected source 0.1.10; string escape parsing only, no unsafe code and no ambient filesystem/process/network capabilities."
+
+[[audits.unescaper]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.6 -> 0.1.8"
+notes = "AI-assisted: reviewed diff 0.1.6 -> 0.1.8"
+
+[[audits.unescaper]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.1.8 -> 0.1.10"
+notes = "AI-assisted: reviewed diff 0.1.8 -> 0.1.10; adds unescape_lossy parsing, vertical-tab escape support, tests, docs, and CI metadata. No unsafe code or ambient I/O/process/network changes in library code."
+
+[[audits.wasm-bindgen]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.100 -> 0.2.125"
+notes = "AI-assisted: reviewed diff 0.2.100 -> 0.2.125"
+
+[[audits.wasm-bindgen]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.125 -> 0.2.126"
+notes = "AI-assisted: reviewed diff 0.2.125 -> 0.2.126"
+
+[[audits.wasm-bindgen]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.126 -> 0.2.127"
+notes = "AI-assisted: reviewed the complete 0.2.126 -> 0.2.127 diff. Adds the JsNullable handle wrapper and covariance implementations and moves the Emscripten marker into the existing const scope. Conversions preserve the established transparent JsValue handle representation and unchecked-cast invariants; no new ambient capabilities were added."
+
+[[audits.wasm-bindgen-macro]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.105 -> 0.2.125"
+notes = "AI-assisted: reviewed diff 0.2.105 -> 0.2.125"
+
+[[audits.wasm-bindgen-macro]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.125 -> 0.2.126"
+notes = "AI-assisted: reviewed diff 0.2.125 -> 0.2.126"
+
+[[audits.wasm-bindgen-macro]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.126 -> 0.2.127"
+notes = "AI-assisted: reviewed the complete 0.2.126 -> 0.2.127 diff; only version metadata and the exact macro-support dependency version changed. No generated-code, unsafe, or ambient capability changes."
+
+[[audits.wasm-bindgen-macro-support]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.100 -> 0.2.125"
+notes = "AI-assisted: reviewed diff 0.2.100 -> 0.2.125"
+
+[[audits.wasm-bindgen-macro-support]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.125 -> 0.2.126"
+notes = "AI-assisted: reviewed diff 0.2.125 -> 0.2.126"
+
+[[audits.wasm-bindgen-macro-support]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.126 -> 0.2.127"
+notes = "AI-assisted: reviewed the complete 0.2.126 -> 0.2.127 diff. Generated code gains JsNullable covariance, hygienic core/alloc paths, corrected Unicode descriptor lengths, async return descriptors, namespace-aware shim hashes, and stricter slice-to-array validation. Existing transmute-based transparent-wrapper conversions are semantically unchanged; no filesystem, process, network, or new unsafe capabilities were introduced."
+
+[[audits.wasm-bindgen-shared]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.100 -> 0.2.125"
+notes = "AI-assisted: reviewed diff 0.2.100 -> 0.2.125"
+
+[[audits.wasm-bindgen-shared]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.125 -> 0.2.126"
+notes = "AI-assisted: reviewed diff 0.2.125 -> 0.2.126"
+
+[[audits.wasm-bindgen-shared]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "0.2.126 -> 0.2.127"
+notes = "AI-assisted: reviewed the complete 0.2.126 -> 0.2.127 diff; only package version metadata changed. No code, unsafe, or ambient capability changes."
+
+[[audits.windows_aarch64_msvc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.52.6"
+notes = "AI-assisted: inspected source 0.52.6; Windows target import library metadata crate. No Rust code, unsafe code, or ambient capabilities."
+
+[[audits.windows_i686_gnu]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.52.6"
+notes = "AI-assisted: inspected source 0.52.6; Windows target import library metadata crate. No Rust code, unsafe code, or ambient capabilities."
+
+[[audits.windows_i686_msvc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.52.6"
+notes = "AI-assisted: inspected source 0.52.6; Windows target import library metadata crate. No Rust code, unsafe code, or ambient capabilities."
+
+[[audits.windows_x86_64_gnu]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.52.6"
+notes = "AI-assisted: inspected source 0.52.6; Windows target import library metadata crate. No Rust code, unsafe code, or ambient capabilities."
+
+[[audits.windows_x86_64_msvc]]
+who = "Codex"
+criteria = "safe-to-deploy"
+version = "0.52.6"
+notes = "AI-assisted: inspected source 0.52.6; Windows target import library metadata crate. No Rust code, unsafe code, or ambient capabilities."
+
+[[audits.zmij]]
+who = "Codex"
+criteria = "safe-to-deploy"
+delta = "1.0.20 -> 1.0.21"
+notes = "AI-assisted: reviewed diff 1.0.20 -> 1.0.21"
+
+[[trusted.apis-saltans-aps]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-core]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-hw]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-macros]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-nwk]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-07"
+end = "2027-07-19"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-zcl]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.apis-saltans-zdp]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2026-07-01"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.ashv2]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2025-07-04"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.cc]]
+criteria = "safe-to-deploy"
+user-id = 55123 # rust-lang-owner
+start = "2022-10-29"
+end = "2027-06-23"
+
+[[trusted.ezsp]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2025-07-04"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.find-msvc-tools]]
+criteria = "safe-to-deploy"
+user-id = 539 # Josh Stone (cuviper)
+start = "2025-08-29"
+end = "2027-06-23"
+
+[[trusted.js-sys]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2019-03-04"
+end = "2027-06-23"
+
+[[trusted.le-stream]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2024-09-18"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.le-stream-derive]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2024-09-18"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.libc]]
+criteria = "safe-to-deploy"
+user-id = 55123 # rust-lang-owner
+start = "2024-08-15"
+end = "2027-06-23"
+
+[[trusted.quote]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-04-09"
+end = "2027-06-23"
+
+[[trusted.semver]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2021-05-25"
+end = "2027-06-23"
+
+[[trusted.silizium]]
+criteria = "safe-to-deploy"
+user-id = 290593 # Richard Neumann (neumann-paulmann)
+start = "2025-07-04"
+end = "2027-07-01"
+notes = "Trusted publisher neumann-paulmann"
+
+[[trusted.syn]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-03-01"
+end = "2027-06-23"
+
+[[trusted.thiserror]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-10-09"
+end = "2027-06-23"
+
+[[trusted.thiserror-impl]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-10-09"
+end = "2027-06-23"
+
+[[trusted.tokio]]
+criteria = "safe-to-deploy"
+user-id = 6741 # Alice Ryhl (Darksonn)
+start = "2020-12-25"
+end = "2027-06-23"
+
+[[trusted.unicode-ident]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2021-10-02"
+end = "2027-06-23"
+
+[[trusted.wasm-bindgen]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2019-03-04"
+end = "2027-06-23"
+
+[[trusted.wasm-bindgen-macro]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2019-03-04"
+end = "2027-06-23"
+
+[[trusted.wasm-bindgen-macro-support]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2019-03-04"
+end = "2027-06-23"
+
+[[trusted.wasm-bindgen-shared]]
+criteria = "safe-to-deploy"
+user-id = 1 # Alex Crichton (alexcrichton)
+start = "2019-03-04"
+end = "2027-06-23"
+
+[[trusted.windows-core]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2021-11-15"
+end = "2027-06-23"
+
+[[trusted.windows-implement]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-01-27"
+end = "2027-06-23"
+
+[[trusted.windows-interface]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-02-18"
+end = "2027-06-23"
+
+[[trusted.windows-result]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2024-02-02"
+end = "2027-06-23"
+
+[[trusted.windows-strings]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2024-02-02"
+end = "2027-06-23"
+
+[[trusted.windows-sys]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2021-11-15"
+end = "2027-06-23"
+
+[[trusted.windows-targets]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-09"
+end = "2027-06-23"
+
+[[trusted.windows_aarch64_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-01"
+end = "2027-06-23"
+
+[[trusted.windows_i686_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2024-04-02"
+end = "2027-06-23"
+
+[[trusted.windows_x86_64_gnullvm]]
+criteria = "safe-to-deploy"
+user-id = 64539 # Kenny Kerr (kennykerr)
+start = "2022-09-01"
+end = "2027-06-23"

@@ -178,8 +178,6 @@ dependencies = [
 [[package]]
 name = "ezsp"
 version = "17.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b2eec494148c3a92243bee94865f7d76876eb75597c09b58a776fa1ccc7b5d3"
 dependencies = [
  "bitflags 2.13.1",
  "const_env",

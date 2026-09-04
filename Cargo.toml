@@ -60,3 +60,13 @@ missing_errors_doc = "allow"
 # loud and reportable, a silent wrap corrupts a device's state invisibly.
 [profile.release]
 overflow-checks = true
+
+# Local patch of `ezsp` 17.0.0, one file changed. Its `importTransientKey`
+# frame declares a 17-byte `Context` field that EZSP v13 does not carry, so the
+# command went on the wire 47 bytes long where the correct frame is 30. The NCP
+# answers OK on the misparse, installing a key spliced out of the wrong bytes,
+# and a Zigbee 3.0 device can then never finish commissioning. See
+# vendor/ezsp/README.md for the wire evidence. 17.0.0 is the newest release, so
+# there is nothing to upgrade to; this goes away when the fix is upstreamed.
+[patch.crates-io]
+ezsp = { path = "vendor/ezsp" }

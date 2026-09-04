@@ -1,0 +1,784 @@
+use core::future::Future;
+
+use crate::Communicate;
+use crate::ember::multi_phy::{nwk, radio};
+use crate::ember::{
+    Eui64, MAX_END_DEVICE_CHILDREN, NodeId, PerDeviceDutyCycle, beacon, child, concentrator,
+    duty_cycle, neighbor, network, node, route,
+};
+use crate::error::Error;
+use crate::ezsp::network::{InitBitmask, scan};
+use crate::frame::parameters::networking::{
+    child_id, clear_stored_beacons, energy_scan_request, find_and_rejoin_network,
+    find_unused_pan_id, form_network, get_child_data, get_current_duty_cycle,
+    get_duty_cycle_limits, get_duty_cycle_state, get_first_beacon, get_logical_channel,
+    get_neighbor, get_neighbor_frame_counter, get_network_parameters, get_next_beacon,
+    get_num_stored_beacons, get_parent_child_parameters, get_radio_channel, get_radio_parameters,
+    get_route_table_entry, get_routing_shortcut_threshold, get_source_route_table_entry,
+    get_source_route_table_filled_size, get_source_route_table_total_size, id, join_network,
+    join_network_directly, leave_network, multi_phy_set_radio_channel, multi_phy_set_radio_power,
+    multi_phy_start, multi_phy_stop, neighbor_count, network_init, network_state, permit_joining,
+    send_link_power_delta_request, set_broken_route_error_code, set_child_data, set_concentrator,
+    set_duty_cycle_limits_in_stack, set_logical_and_radio_channel, set_manufacturer_code,
+    set_neighbor_frame_counter, set_power_descriptor, set_radio_channel,
+    set_radio_ieee802154_cca_mode, set_radio_power, set_routing_shortcut_threshold, start_scan,
+    stop_scan,
+};
+
+/// The `Networking` trait provides an interface for the networking features.
+pub trait Networking {
+    /// Convert a child index to a node ID.
+    fn child_id(
+        &mut self,
+        child_index: u8,
+    ) -> impl Future<Output = Result<Option<NodeId>, Error>> + Send;
+
+    /// Clears all cached beacons that have been collected from a scan.
+    fn clear_stored_beacons(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sends a ZDO energy scan request.
+    ///
+    /// This request may only be sent by the current network manager and must be unicast, not broadcast.
+    fn energy_scan_request(
+        &mut self,
+        target: NodeId,
+        scan_channels: u32,
+        scan_duration: u8,
+        scan_count: u16,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// The application may call this function when contact with the network has been lost.
+    ///
+    /// The most common usage case is when an end device can no longer communicate with its parent
+    /// and wishes to find a new one. Another case is when a device has missed a Network Key update
+    /// and no longer has the current Network Key.
+    ///
+    /// The stack will call `ezspStackStatusHandler` to indicate that the network is down,
+    /// then try to re-establish contact with the network by performing an active scan,
+    /// choosing a network with matching extended pan id, and sending a Zigbee network rejoin request.
+    /// A second call to the `ezspStackStatusHandler` callback indicates either the success or the
+    /// failure of the attempt. The process takes approximately 150 milliseconds per channel to complete.
+    ///
+    /// This call replaces the emberMobileNodeHasMoved API from `EmberZNet` 2.x,
+    /// which used MAC association and consequently took half a second longer to complete.
+    fn find_and_rejoin_network(
+        &mut self,
+        have_current_network_key: bool,
+        channel_mask: u32,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// This function starts a series of scans which will return an available panId.
+    fn find_unused_pan_id(
+        &mut self,
+        channel_mask: u32,
+        duration: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Forms a new network by becoming the coordinator.
+    fn form_network(
+        &mut self,
+        parameters: network::Parameters,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Returns information about a child of the local node.
+    fn get_child_data(
+        &mut self,
+        index: u8,
+    ) -> impl Future<Output = Result<child::Data, Error>> + Send;
+
+    /// Returns the duty cycle of the stack's connected children that are being monitored, up to `max_devices`.
+    ///
+    /// It indicates the amount of overall duty cycle they have consumed (up to the suspend limit).
+    /// The first entry is always the local stack's nodeId, and thus the total aggregate duty cycle
+    /// for the device. The passed pointer arrayOfDeviceDutyCycles MUST have space for `max_devices`.
+    fn get_current_duty_cycle(
+        &mut self,
+        max_devices: u8,
+    ) -> impl Future<
+        Output = Result<heapless::Vec<PerDeviceDutyCycle, MAX_END_DEVICE_CHILDREN>, Error>,
+    > + Send;
+
+    /// Obtains the current duty cycle limits that were previously set by a call to
+    /// [`set_duty_cycle_limits_in_stack()`](Self::set_duty_cycle_limits_in_stack),
+    /// or the defaults set by the stack if no set call was made.
+    fn get_duty_cycle_limits(
+        &mut self,
+    ) -> impl Future<Output = Result<duty_cycle::Limits, Error>> + Send;
+
+    /// Obtains the current duty cycle state.
+    fn get_duty_cycle_state(
+        &mut self,
+    ) -> impl Future<Output = Result<duty_cycle::State, Error>> + Send;
+
+    /// Returns the first beacon in the cache.
+    ///
+    /// Beacons are stored in cache after issuing an active scan.
+    fn get_first_beacon(&mut self) -> impl Future<Output = Result<beacon::Iterator, Error>> + Send;
+
+    /// Get the logical channel from the ZLL stack.
+    fn get_logical_channel(&mut self) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Returns the neighbor table entry at the given index.
+    ///
+    /// The number of active neighbors can be obtained using the
+    /// [`neighbor_count()`](Self::neighbor_count) command.
+    fn get_neighbor(
+        &mut self,
+        index: u8,
+    ) -> impl Future<Output = Result<neighbor::TableEntry, Error>> + Send;
+
+    /// Return counter status depending on whether the frame counter of the node is found in the
+    /// neighbor or child table.
+    ///
+    /// This function gets the last received frame counter as found in the Network Auxiliary header
+    /// for the specified neighbor or child
+    fn get_neighbor_frame_counter(
+        &mut self,
+        eui64: Eui64,
+    ) -> impl Future<Output = Result<u32, Error>> + Send;
+
+    /// Returns the current network parameters.
+    fn get_network_parameters(
+        &mut self,
+    ) -> impl Future<Output = Result<(node::Type, network::Parameters), Error>> + Send;
+
+    /// Returns the next beacon in the cache.
+    ///
+    /// Beacons are stored in cache after issuing an active scan.
+    fn get_next_beacon(&mut self) -> impl Future<Output = Result<beacon::Data, Error>> + Send;
+
+    /// Returns the number of cached beacons that have been collected from a scan.
+    fn get_num_stored_beacons(&mut self) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Returns information about the children of the local node and the parent of the local node.
+    fn get_parent_child_parameters(
+        &mut self,
+    ) -> impl Future<Output = Result<get_parent_child_parameters::Response, Error>> + Send;
+
+    /// Gets the channel in use for sending and receiving messages.
+    fn get_radio_channel(&mut self) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Returns the current radio parameters based on phy index.
+    fn get_radio_parameters(
+        &mut self,
+        phy_index: u8,
+    ) -> impl Future<Output = Result<radio::Parameters, Error>> + Send;
+
+    /// Returns the route table entry at the given index.
+    ///
+    /// The route table size can be obtained using the
+    /// [`get_configuration_value()`](crate::Configuration::get_configuration_value) command.
+    fn get_route_table_entry(
+        &mut self,
+        index: u8,
+    ) -> impl Future<Output = Result<route::TableEntry, Error>> + Send;
+
+    /// Gets the routing shortcut threshold used to differentiate between directly using a neighbor
+    /// vs. performing routing.
+    fn get_routing_shortcut_threshold(&mut self) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Returns information about a source route table entry.
+    fn get_source_route_table_entry(
+        &mut self,
+        index: u8,
+    ) -> impl Future<Output = Result<get_source_route_table_entry::Entry, Error>> + Send;
+
+    /// Returns the number of filled entries in source route table.
+    fn get_source_route_table_filled_size(
+        &mut self,
+    ) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Returns the source route table total size.
+    fn get_source_route_table_total_size(
+        &mut self,
+    ) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Convert a node ID to a child index.
+    fn id(&mut self, child_id: NodeId) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Causes the stack to associate with the network using the specified network parameters.
+    ///
+    /// It can take several seconds for the stack to associate with the local network.
+    /// Do not send messages until the stackStatusHandler callback informs you that the stack is up.
+    fn join_network(
+        &mut self,
+        node_type: node::Type,
+        parameters: network::Parameters,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Causes the stack to associate with the network using the specified network parameters in
+    /// the beacon parameter.
+    ///
+    /// It can take several seconds for the stack to associate with the local network.
+    /// Do not send messages until the stackStatusHandler callback informs you that the stack is up.
+    /// Unlike [`Self::join_network`], this function does not issue an active scan before joining.
+    /// Instead, it will cause the local node to issue a MAC Association Request directly to the
+    /// specified target node. It is assumed that the beacon parameter is an artifact after issuing
+    /// an active scan. (For more information, see emberGetBestBeacon and emberGetNextBeacon.)
+    fn join_network_directly(
+        &mut self,
+        local_node_type: node::Type,
+        beacon: beacon::Data,
+        radio_tx_power: i8,
+        clear_beacons_after_network_up: bool,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Causes the stack to leave the current network.
+    ///
+    /// This generates a stackStatusHandler callback to indicate that the network is down.
+    /// The radio will not be used until after sending a formNetwork or joinNetwork command.
+    fn leave_network(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the channel for desired phy interface to use for sending and receiving messages.
+    ///
+    /// For a list of available radio pages and channels, see the technical specification for the
+    /// RF communication module in your Developer Kit.
+    ///
+    /// Note: Care should be taken when using this API,
+    /// as all devices on a network must use the same page and channel.
+    fn multi_phy_set_radio_channel(
+        &mut self,
+        phy_index: u8,
+        page: u8,
+        channel: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the radio output power for desired phy interface at which a node is operating.
+    ///
+    /// Ember radios have discrete power settings. For a list of available power settings,
+    /// see the technical specification for the RF communication module in your Developer Kit.
+    ///
+    /// Note: Care should be taken when using this api on a running network,
+    /// as it will directly impact the established link qualities neighboring
+    /// nodes have with the node on which it is called.
+    /// This can lead to disruption of existing routes and erratic network behavior.
+    fn multi_phy_set_radio_power(
+        &mut self,
+        phy_index: u8,
+        power: i8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// This causes to initialize the desired radio interface other than native and form a new
+    /// network by becoming the coordinator with same panId as native radio network.
+    fn multi_phy_start(
+        &mut self,
+        phy_index: u8,
+        page: u8,
+        channel: u8,
+        power: i8,
+        bitmask: nwk::Config,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// This causes to bring down the radio interface other than native.
+    fn multi_phy_stop(&mut self, phy_index: u8) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Returns the number of active entries in the neighbor table.
+    fn neighbor_count(&mut self) -> impl Future<Output = Result<u8, Error>> + Send;
+
+    /// Resume network operation after a reboot.
+    ///
+    /// The node retains its original type.
+    /// This should be called on startup whether the node was previously part of a network.
+    /// [`Status::NotJoined`](crate::ember::Status::NotJoined) is returned if the node is not part of a network.
+    /// This command accepts options to control the network initialization.
+    fn network_init(
+        &mut self,
+        bitmask: InitBitmask,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Returns a value indicating whether the node is joining, joined to, or leaving a network.
+    fn network_state(&mut self) -> impl Future<Output = Result<network::Status, Error>> + Send;
+
+    /// Tells the stack to allow other nodes to join the network with this node as their parent.
+    ///
+    /// Joining is initially disabled by default.
+    fn permit_joining(
+        &mut self,
+        duration: network::Duration,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Send Link Power Delta Request from a child to its parent.
+    fn send_link_power_delta_request(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the error code that is sent back from a router with a broken route.
+    fn set_broken_route_error_code(
+        &mut self,
+        error_code: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets child data to the child table token.
+    fn set_child_data(
+        &mut self,
+        index: u8,
+        child_data: child::Data,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Enable/disable concentrator support.
+    fn set_concentrator(
+        &mut self,
+        parameters: Option<concentrator::Parameters>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Set the current duty cycle limits configuration.
+    ///
+    /// The Default limits set by stack if this call is not made.
+    fn set_duty_cycle_limits_in_stack(
+        &mut self,
+        limits: duty_cycle::Limits,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// This call sets the radio channel in the stack and propagates the information to the hardware.
+    fn set_logical_and_radio_channel(
+        &mut self,
+        radio_channel: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the manufacturer code to the specified value.
+    ///
+    /// The manufacturer code is one of the fields of the node descriptor.
+    fn set_manufacturer_code(
+        &mut self,
+        code: u16,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the frame counter for the neighbor or child.
+    fn set_neighbor_frame_counter(
+        &mut self,
+        eui64: Eui64,
+        frame_counter: u32,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the power descriptor to the specified value.
+    ///
+    /// The power descriptor is a dynamic value.
+    /// Therefore, you should call this function whenever the value changes.
+    fn set_power_descriptor(
+        &mut self,
+        power_descriptor: u16,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the channel to use for sending and receiving messages.
+    ///
+    /// For a list of available radio channels, see the technical specification for the RF
+    /// communication module in your Developer Kit.
+    ///
+    /// Note: Care should be taken when using this API,
+    /// as all devices on a network must use the same channel.
+    fn set_radio_channel(&mut self, channel: u8) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Set the configured 802.15.4 CCA mode in the radio.
+    fn set_radio_ieee802154_cca_mode(
+        &mut self,
+        cca_mode: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the radio output power at which a node is operating.
+    ///
+    /// Ember radios have discrete power settings. For a list of available power settings,
+    /// see the technical specification for the RF communication module in your Developer Kit.
+    ///
+    /// Note: Care should be taken when using this API on a running network,
+    /// as it will directly impact the established link qualities neighboring nodes have with
+    /// the node on which it is called.
+    /// This can lead to disruption of existing routes and erratic network behavior.
+    fn set_radio_power(&mut self, power: i8) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Sets the routing shortcut threshold to directly use a neighbor instead of performing routing.
+    fn set_routing_shortcut_threshold(
+        &mut self,
+        cost_thresh: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// This function will start a scan.
+    fn start_scan(
+        &mut self,
+        scan_type: scan::Type,
+        channel_mask: u32,
+        duration: u8,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Terminates a scan in progress.
+    fn stop_scan(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+}
+
+impl<T> Networking for T
+where
+    T: Communicate,
+{
+    async fn child_id(&mut self, child_index: u8) -> Result<Option<NodeId>, Error> {
+        self.communicate(child_id::Command::new(child_index))
+            .await
+            .map(|response| response.child_id())
+    }
+
+    async fn clear_stored_beacons(&mut self) -> Result<(), Error> {
+        self.communicate(clear_stored_beacons::Command)
+            .await
+            .map(drop)
+    }
+
+    async fn energy_scan_request(
+        &mut self,
+        target: NodeId,
+        scan_channels: u32,
+        scan_duration: u8,
+        scan_count: u16,
+    ) -> Result<(), Error> {
+        self.communicate(energy_scan_request::Command::new(
+            target,
+            scan_channels,
+            scan_duration,
+            scan_count,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn find_and_rejoin_network(
+        &mut self,
+        have_current_network_key: bool,
+        channel_mask: u32,
+    ) -> Result<(), Error> {
+        self.communicate(find_and_rejoin_network::Command::new(
+            have_current_network_key,
+            channel_mask,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn find_unused_pan_id(&mut self, channel_mask: u32, duration: u8) -> Result<(), Error> {
+        self.communicate(find_unused_pan_id::Command::new(channel_mask, duration))
+            .await?
+            .try_into()
+    }
+
+    async fn form_network(&mut self, parameters: network::Parameters) -> Result<(), Error> {
+        self.communicate(form_network::Command::new(parameters))
+            .await?
+            .try_into()
+    }
+
+    async fn get_child_data(&mut self, index: u8) -> Result<child::Data, Error> {
+        self.communicate(get_child_data::Command::new(index))
+            .await?
+            .try_into()
+    }
+
+    async fn get_current_duty_cycle(
+        &mut self,
+        max_devices: u8,
+    ) -> Result<heapless::Vec<PerDeviceDutyCycle, MAX_END_DEVICE_CHILDREN>, Error> {
+        self.communicate(get_current_duty_cycle::Command::new(max_devices))
+            .await?
+            .try_into()
+    }
+
+    async fn get_duty_cycle_limits(&mut self) -> Result<duty_cycle::Limits, Error> {
+        self.communicate(get_duty_cycle_limits::Command)
+            .await?
+            .try_into()
+    }
+
+    async fn get_duty_cycle_state(&mut self) -> Result<duty_cycle::State, Error> {
+        self.communicate(get_duty_cycle_state::Command)
+            .await?
+            .try_into()
+    }
+
+    async fn get_first_beacon(&mut self) -> Result<beacon::Iterator, Error> {
+        self.communicate(get_first_beacon::Command)
+            .await?
+            .try_into()
+    }
+
+    async fn get_logical_channel(&mut self) -> Result<u8, Error> {
+        self.communicate(get_logical_channel::Command)
+            .await
+            .map(|response| response.logical_channel())
+    }
+
+    async fn get_neighbor(&mut self, index: u8) -> Result<neighbor::TableEntry, Error> {
+        self.communicate(get_neighbor::Command::new(index))
+            .await?
+            .try_into()
+    }
+
+    async fn get_neighbor_frame_counter(&mut self, eui64: Eui64) -> Result<u32, Error> {
+        self.communicate(get_neighbor_frame_counter::Command::new(eui64))
+            .await?
+            .try_into()
+    }
+
+    async fn get_network_parameters(&mut self) -> Result<(node::Type, network::Parameters), Error> {
+        self.communicate(get_network_parameters::Command)
+            .await?
+            .try_into()
+    }
+
+    async fn get_next_beacon(&mut self) -> Result<beacon::Data, Error> {
+        self.communicate(get_next_beacon::Command).await?.try_into()
+    }
+
+    async fn get_num_stored_beacons(&mut self) -> Result<u8, Error> {
+        self.communicate(get_num_stored_beacons::Command)
+            .await
+            .map(|response| response.num_beacons())
+    }
+
+    async fn get_parent_child_parameters(
+        &mut self,
+    ) -> Result<get_parent_child_parameters::Response, Error> {
+        self.communicate(get_parent_child_parameters::Command).await
+    }
+
+    async fn get_radio_channel(&mut self) -> Result<u8, Error> {
+        self.communicate(get_radio_channel::Command)
+            .await
+            .map(|response| response.channel())
+    }
+
+    async fn get_radio_parameters(&mut self, phy_index: u8) -> Result<radio::Parameters, Error> {
+        self.communicate(get_radio_parameters::Command::new(phy_index))
+            .await?
+            .try_into()
+    }
+
+    async fn get_route_table_entry(&mut self, index: u8) -> Result<route::TableEntry, Error> {
+        self.communicate(get_route_table_entry::Command::new(index))
+            .await?
+            .try_into()
+    }
+
+    async fn get_routing_shortcut_threshold(&mut self) -> Result<u8, Error> {
+        self.communicate(get_routing_shortcut_threshold::Command)
+            .await
+            .map(|response| response.routing_shortcut_thresh())
+    }
+
+    async fn get_source_route_table_entry(
+        &mut self,
+        index: u8,
+    ) -> Result<get_source_route_table_entry::Entry, Error> {
+        self.communicate(get_source_route_table_entry::Command::new(index))
+            .await?
+            .try_into()
+    }
+
+    async fn get_source_route_table_filled_size(&mut self) -> Result<u8, Error> {
+        self.communicate(get_source_route_table_filled_size::Command)
+            .await
+            .map(|response| response.source_route_table_filled_size())
+    }
+
+    async fn get_source_route_table_total_size(&mut self) -> Result<u8, Error> {
+        self.communicate(get_source_route_table_total_size::Command)
+            .await
+            .map(|response| response.source_route_table_total_size())
+    }
+
+    async fn id(&mut self, child_id: NodeId) -> Result<u8, Error> {
+        self.communicate(id::Command::new(child_id))
+            .await
+            .map(|response| response.child_index())
+    }
+
+    async fn join_network(
+        &mut self,
+        node_type: node::Type,
+        parameters: network::Parameters,
+    ) -> Result<(), Error> {
+        self.communicate(join_network::Command::new(node_type, parameters))
+            .await?
+            .try_into()
+    }
+
+    async fn join_network_directly(
+        &mut self,
+        local_node_type: node::Type,
+        beacon: beacon::Data,
+        radio_tx_power: i8,
+        clear_beacons_after_network_up: bool,
+    ) -> Result<(), Error> {
+        self.communicate(join_network_directly::Command::new(
+            local_node_type,
+            beacon,
+            radio_tx_power,
+            clear_beacons_after_network_up,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn leave_network(&mut self) -> Result<(), Error> {
+        self.communicate(leave_network::Command).await?.try_into()
+    }
+
+    async fn multi_phy_set_radio_channel(
+        &mut self,
+        phy_index: u8,
+        page: u8,
+        channel: u8,
+    ) -> Result<(), Error> {
+        self.communicate(multi_phy_set_radio_channel::Command::new(
+            phy_index, page, channel,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn multi_phy_set_radio_power(&mut self, phy_index: u8, power: i8) -> Result<(), Error> {
+        self.communicate(multi_phy_set_radio_power::Command::new(phy_index, power))
+            .await?
+            .try_into()
+    }
+
+    async fn multi_phy_start(
+        &mut self,
+        phy_index: u8,
+        page: u8,
+        channel: u8,
+        power: i8,
+        bitmask: nwk::Config,
+    ) -> Result<(), Error> {
+        self.communicate(multi_phy_start::Command::new(
+            phy_index, page, channel, power, bitmask,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn multi_phy_stop(&mut self, phy_index: u8) -> Result<(), Error> {
+        self.communicate(multi_phy_stop::Command::new(phy_index))
+            .await?
+            .try_into()
+    }
+
+    async fn neighbor_count(&mut self) -> Result<u8, Error> {
+        self.communicate(neighbor_count::Command)
+            .await
+            .map(|response| response.value())
+    }
+
+    async fn network_init(&mut self, bitmask: InitBitmask) -> Result<(), Error> {
+        self.communicate(network_init::Command::new(bitmask))
+            .await?
+            .try_into()
+    }
+
+    async fn network_state(&mut self) -> Result<network::Status, Error> {
+        self.communicate(network_state::Command).await?.try_into()
+    }
+
+    async fn permit_joining(&mut self, duration: network::Duration) -> Result<(), Error> {
+        self.communicate(permit_joining::Command::new(duration))
+            .await?
+            .try_into()
+    }
+
+    async fn send_link_power_delta_request(&mut self) -> Result<(), Error> {
+        self.communicate(send_link_power_delta_request::Command)
+            .await?
+            .try_into()
+    }
+
+    async fn set_broken_route_error_code(&mut self, error_code: u8) -> Result<(), Error> {
+        self.communicate(set_broken_route_error_code::Command::new(error_code))
+            .await?
+            .try_into()
+    }
+
+    async fn set_child_data(&mut self, index: u8, child_data: child::Data) -> Result<(), Error> {
+        self.communicate(set_child_data::Command::new(index, child_data))
+            .await?
+            .try_into()
+    }
+
+    async fn set_concentrator(
+        &mut self,
+        parameters: Option<concentrator::Parameters>,
+    ) -> Result<(), Error> {
+        self.communicate(set_concentrator::Command::from(parameters))
+            .await?
+            .try_into()
+    }
+
+    async fn set_duty_cycle_limits_in_stack(
+        &mut self,
+        limits: duty_cycle::Limits,
+    ) -> Result<(), Error> {
+        self.communicate(set_duty_cycle_limits_in_stack::Command::from(limits))
+            .await?
+            .try_into()
+    }
+
+    async fn set_logical_and_radio_channel(&mut self, radio_channel: u8) -> Result<(), Error> {
+        self.communicate(set_logical_and_radio_channel::Command::new(radio_channel))
+            .await?
+            .try_into()
+    }
+
+    async fn set_manufacturer_code(&mut self, code: u16) -> Result<(), Error> {
+        self.communicate(set_manufacturer_code::Command::new(code))
+            .await
+            .map(drop)
+    }
+
+    async fn set_neighbor_frame_counter(
+        &mut self,
+        eui64: Eui64,
+        frame_counter: u32,
+    ) -> Result<(), Error> {
+        self.communicate(set_neighbor_frame_counter::Command::new(
+            eui64,
+            frame_counter,
+        ))
+        .await?
+        .try_into()
+    }
+
+    async fn set_power_descriptor(&mut self, power_descriptor: u16) -> Result<(), Error> {
+        self.communicate(set_power_descriptor::Command::new(power_descriptor))
+            .await
+            .map(drop)
+    }
+
+    async fn set_radio_channel(&mut self, channel: u8) -> Result<(), Error> {
+        self.communicate(set_radio_channel::Command::new(channel))
+            .await?
+            .try_into()
+    }
+
+    async fn set_radio_ieee802154_cca_mode(&mut self, cca_mode: u8) -> Result<(), Error> {
+        self.communicate(set_radio_ieee802154_cca_mode::Command::new(cca_mode))
+            .await?
+            .try_into()
+    }
+
+    async fn set_radio_power(&mut self, power: i8) -> Result<(), Error> {
+        self.communicate(set_radio_power::Command::new(power))
+            .await?
+            .try_into()
+    }
+
+    async fn set_routing_shortcut_threshold(&mut self, cost_thresh: u8) -> Result<(), Error> {
+        self.communicate(set_routing_shortcut_threshold::Command::new(cost_thresh))
+            .await?
+            .try_into()
+    }
+
+    async fn start_scan(
+        &mut self,
+        scan_type: scan::Type,
+        channel_mask: u32,
+        duration: u8,
+    ) -> Result<(), Error> {
+        self.communicate(start_scan::Command::new(scan_type, channel_mask, duration))
+            .await?
+            .try_into()
+    }
+
+    async fn stop_scan(&mut self) -> Result<(), Error> {
+        self.communicate(stop_scan::Command).await?.try_into()
+    }
+}
