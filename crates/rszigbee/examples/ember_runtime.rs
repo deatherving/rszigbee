@@ -54,11 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = args
         .iter()
         .find(|a| !a.starts_with("--"))
-        .ok_or("usage: ember_runtime <serial-path> [--form] [--permit-join] [--actuate]")?
+        .ok_or(
+            "usage: ember_runtime <serial-path> [--form] [--permit-join] [--actuate] [--configure]",
+        )?
         .clone();
     let may_form = args.iter().any(|a| a == "--form");
     let permit_join = args.iter().any(|a| a == "--permit-join");
     let actuate = args.iter().any(|a| a == "--actuate");
+    let configure = args.iter().any(|a| a == "--configure");
 
     let store = FileStore::open(
         std::env::var("RSZIGBEE_DATA").unwrap_or_else(|_| "./rszigbee-data".into()),
@@ -135,7 +138,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Joining first when it is wanted. The coordinator self-tests below take
     // about twelve seconds, and a device's pairing window is finite — spending
     // that time before opening the window cost one attempt already.
-    if actuate {
+    if configure {
+        configure_a_device(&zigbee).await;
+    } else if actuate {
         actuate_a_device(&zigbee).await;
     } else if permit_join {
         println!("\n=== opening joining for 240s ===");
@@ -236,6 +241,76 @@ async fn interview_coordinator(zigbee: &Zigbee) {
         }
         Ok(Err(e)) => println!("  interview failed: {e}"),
         Err(_) => println!("  interview did not finish within 30s"),
+    }
+}
+
+/// Binds and configures reporting on a real device, printing every step.
+///
+/// The step the runtime already runs after an interview, made visible. It
+/// matters more than it looks: bind without configure and many devices report
+/// only when polled, so a sensor that appears to work goes quiet as soon as
+/// nothing is asking. Whether a *particular* device accepted the configuration
+/// is not something the mock can answer.
+async fn configure_a_device(zigbee: &Zigbee) {
+    let coordinator = zigbee.coordinator();
+    let devices = match zigbee.devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            println!("cannot list devices: {e}");
+            return;
+        }
+    };
+    let Some(target) = devices.iter().find(|d| d.ieee != coordinator) else {
+        println!("\n=== no device to configure ===");
+        println!("Only the coordinator is known. Pair a device first with --permit-join.");
+        return;
+    };
+
+    println!("\n=== configure plan for {} ===", target.ieee);
+    match zigbee.configure_plan(target.ieee).await {
+        Ok(steps) if steps.is_empty() => {
+            println!("  (empty: the definition asks for no bindings or reporting)");
+        }
+        Ok(steps) => {
+            for step in &steps {
+                match (step.attribute, step.attribute_type) {
+                    (Some(attribute), ty) => println!(
+                        "  ep {} cluster 0x{:04x} attr 0x{:04x} {:?} every {}..{}s",
+                        step.endpoint.0,
+                        step.cluster.0,
+                        attribute.0,
+                        ty,
+                        step.min_interval,
+                        step.max_interval
+                    ),
+                    (None, _) => println!(
+                        "  ep {} cluster 0x{:04x} bind only",
+                        step.endpoint.0, step.cluster.0
+                    ),
+                }
+            }
+        }
+        Err(e) => println!("  cannot plan: {e}"),
+    }
+
+    println!("\n=== executing it ===");
+    // Longer than the ZDO and ZCL timeouts combined: every step is a round trip
+    // to a sleepy device that has to poll before it hears anything.
+    match tokio::time::timeout(Duration::from_secs(90), zigbee.configure(target.ieee)).await {
+        Ok(Ok(outcome)) => {
+            println!(
+                "  bound {}, configured {}, failed {}",
+                outcome.bound, outcome.configured, outcome.failed
+            );
+            if outcome.failed > 0 {
+                println!("  -> a failure here is the device refusing, not a transport error;");
+                println!(
+                    "     many devices accept the bind and refuse reporting on some attributes"
+                );
+            }
+        }
+        Ok(Err(e)) => println!("  refused: {e}"),
+        Err(_) => println!("  did not finish within 90s"),
     }
 }
 
