@@ -17,6 +17,7 @@ readme = "../../README.md"
 rszigbee-core.workspace = true
 rszigbee-adapter.workspace = true
 rszigbee-devices.workspace = true
+rszigbee-mqtt = { workspace = true, optional = true }
 rszigbee-spec.workspace = true
 rszigbee-adapter-ember = { workspace = true, optional = true }
 
@@ -33,6 +34,10 @@ file-store = ["rszigbee-core/file-store"]
 # The generated device definitions. Default-on: an application depending on
 # `rszigbee` wants its devices recognised without assembling a definition set.
 bundled-devices = ["rszigbee-core/bundled-devices"]
+# The Zigbee2MQTT-compatible MQTT contract. Off by default: the typed Rust API
+# is the primary path, and an embedded caller should not link a JSON serialiser
+# for a gateway mode it does not run.
+mqtt = ["dep:rszigbee-mqtt"]
 
 [lints]
 workspace = true

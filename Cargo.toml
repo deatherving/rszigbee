@@ -26,11 +26,13 @@ rszigbee-adapter = { path = "crates/rszigbee-adapter", version = "0.0.1" }
 rszigbee-core = { path = "crates/rszigbee-core", version = "0.0.1" }
 rszigbee-devices = { path = "crates/rszigbee-devices", version = "0.0.1", default-features = false }
 rszigbee-adapter-ember = { path = "crates/rszigbee-adapter-ember", version = "0.0.1" }
+rszigbee-mqtt = { path = "crates/rszigbee-mqtt", version = "0.0.1" }
 
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }
 tokio = { version = "1", default-features = false }
 serde = { version = "1", default-features = false }
+serde_json = { version = "1", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"

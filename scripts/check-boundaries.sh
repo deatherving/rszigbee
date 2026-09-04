@@ -100,6 +100,46 @@ done
 grep -qiE '^(tokio|serialport|tokio-serial|mio|socket2) ' <<<"$spec" \
   || ok "rszigbee-spec is sans-IO"
 
+# --- rszigbee-mqtt is sans-IO too ---
+#
+# The MQTT crate holds the contract, not a client. That is what lets the exact
+# topics and payloads be tested against captured ones with no broker running,
+# and it keeps the choice of MQTT library out of the part that has to be byte
+# for byte right. An MQTT client or a runtime dependency appearing here would
+# take that away quietly, so it is checked rather than trusted.
+if [ -d crates/rszigbee-mqtt ]; then
+  mqtt_io=0
+
+  # Its *own* dependencies, read from the manifest rather than from
+  # `cargo tree`. The tree is the wrong instrument here: this crate depends on
+  # rszigbee-core, which legitimately owns the tokio task that drives the
+  # radio, so tokio appears transitively and always will. What must not appear
+  # is tokio as a *direct* dependency of this crate.
+  direct="$(awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' crates/rszigbee-mqtt/Cargo.toml)"
+  for forbidden in tokio mio socket2; do
+    if grep -qE "^${forbidden}[ .=]" <<<"$direct"; then
+      bad "rszigbee-mqtt depends directly on '${forbidden}'"
+      note "rszigbee-mqtt is the contract, not a client: events to publications"
+      note "and messages to intents, so it is testable without a broker."
+      mqtt_io=1
+    fi
+  done
+
+  # An MQTT client must not appear anywhere in its tree, transitively or not.
+  # Nothing it depends on has any business pulling one in.
+  mqtt_tree="$(tree rszigbee-mqtt)"
+  for forbidden in rumqttc paho-mqtt mqtt-async-client ntex-mqtt mqtt-protocol; do
+    if grep -qi "^${forbidden} " <<<"$mqtt_tree"; then
+      bad "rszigbee-mqtt pulls in the MQTT client '${forbidden}'"
+      note "The contract crate holds no client, so the topics and payloads can"
+      note "be tested against captured ones with no broker running."
+      mqtt_io=1
+    fi
+  done
+
+  [ "$mqtt_io" -eq 0 ] && ok "rszigbee-mqtt is sans-IO"
+fi
+
 # --- rszigbee-devices must not depend on the runtime (once it exists) ---
 if [ -d crates/rszigbee-devices ]; then
   if tree rszigbee-devices | grep -q '^rszigbee-core '; then

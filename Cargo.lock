@@ -540,6 +540,7 @@ dependencies = [
  "rszigbee-adapter-ember",
  "rszigbee-core",
  "rszigbee-devices",
+ "rszigbee-mqtt",
  "rszigbee-spec",
  "tokio",
  "tracing-subscriber",
@@ -594,6 +595,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "rszigbee-mqtt"
+version = "0.0.1"
+dependencies = [
+ "rszigbee-core",
+ "rszigbee-spec",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
  "tracing",
 ]
 

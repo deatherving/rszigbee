@@ -121,6 +121,17 @@ pub mod ember {
     pub use rszigbee_adapter_ember::*;
 }
 
+/// The Zigbee2MQTT-compatible MQTT contract.
+///
+/// The optional second mode. Sans-IO: it turns runtime events into
+/// publications and inbound messages into intents, and holds no MQTT client,
+/// so the contract is testable against captured payloads without a broker.
+#[cfg(feature = "mqtt")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mqtt")))]
+pub mod mqtt {
+    pub use rszigbee_mqtt::*;
+}
+
 // The types an application touches constantly, at the crate root so the common
 // case needs no module paths.
 pub use rszigbee_adapter::{

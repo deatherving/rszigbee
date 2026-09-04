@@ -19,8 +19,8 @@ library with a typed API, and a Zigbee2MQTT-compatible MQTT gateway.
 > device-compatibility engine all work, and the whole chain — join, commission,
 > interview, resolve a definition, bind, configure reporting, receive typed
 > state, send a command that actuates — is confirmed against physical hardware.
-> The MQTT layer does not exist, so this is not usable as a gateway yet. See
-> [Status](#status).
+> The MQTT layer has its contract but no client, so this is not usable as a
+> gateway yet. See [Status](#status).
 
 ## Status
 
@@ -99,7 +99,18 @@ The runtime consumes definitions, in both directions:
   `configureReporting`, and an arriving report becomes typed state — a caller
   sees `temperature: 21.37`, not cluster `0x0402` attribute `0x0000` = `2137`.
 
-No MQTT layer, no Home Assistant discovery.
+The MQTT layer is **half built**: `rszigbee-mqtt` holds the Zigbee2MQTT
+contract — topics, payloads, and the translation both ways — and no MQTT
+client, so it is not yet a gateway you can point Home Assistant at. There is no
+Home Assistant discovery.
+
+The contract is *observed*, not read. Zigbee2MQTT is GPL-3.0 and its source has
+deliberately not been read; every topic and payload was captured by running it
+against this same coordinator and reading what it put on the wire, and the
+inbound direction was confirmed by publishing to `<base>/<ieee>/set` and
+watching the valve open and close. An interface reproduced from its observable
+behaviour is a contract; a translation of an implementation would be a derived
+work.
 
 363 tests, none of which need hardware.
 
@@ -135,11 +146,12 @@ while let Some(event) = events.recv().await {
 | `rszigbee-adapter-ember` | Silicon Labs EmberZNet, via EZSP over ASHv2 |
 | `rszigbee-core` | the runtime, device model, state, events, commands, reachability, persistence |
 | `rszigbee-devices` | declarative device definitions and the matcher |
+| `rszigbee-mqtt` | the Zigbee2MQTT topic and payload contract. Sans-IO |
 
 ## Boundaries
 
 The rules that hold the design together are **checked in CI** by
-`scripts/check-boundaries.sh` rather than left to discipline. Six checks run;
+`scripts/check-boundaries.sh` rather than left to discipline. Eight checks run;
 these are the three that matter most:
 
 1. **`rszigbee-core` does not know EZSP exists.** Only
@@ -159,9 +171,11 @@ these are the three that matter most:
    `fuzz/` holds coverage-guided targets for longer runs — 34.7 million
    executions across the three so far, no crashes.
 
-The other three keep `rszigbee-devices` from depending on the runtime (so
-definitions stay data the runtime interprets, not the reverse), keep
-`ZigbeeStore` to Zigbee domain state, and keep the workspace free of `unsafe`.
+The rest keep `rszigbee-devices` from depending on the runtime (so definitions
+stay data the runtime interprets, not the reverse), keep `ZigbeeStore` to
+Zigbee domain state, keep `rszigbee-mqtt` free of an MQTT client so the
+contract stays testable without a broker, and keep the workspace free of
+`unsafe`.
 
 Each rule has a negative control — deliberately breaking it makes the check
 fail and name the offending crate.
