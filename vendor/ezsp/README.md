@@ -1,66 +1,419 @@
-# Vendored `ezsp` 17.0.0, with one file changed
+# ezsp
 
-Upstream: <https://crates.io/crates/ezsp> — MIT. This is release 17.0.0
-unmodified except for the single fix below, kept here so the build is
-reproducible without depending on a fork being reachable.
+Actor-based host support for the EmberZNet Serial Protocol (EZSP).
 
-**Delete this directory and the `[patch.crates-io]` entry in the workspace
-`Cargo.toml` as soon as a release carries the fix.** 17.0.0 was the newest
-release when this was written, so there was nothing to upgrade to.
+EZSP is the command protocol used by a host application processor to control
+the EmberZNet PRO stack running on a Silicon Labs Network Co-Processor (NCP).
+This crate models typed command, response, and callback payloads; legacy and
+extended frame headers; transport-independent actors; high-level Zigbee
+workflows; and a transport API that external link implementations, including
+ASHv2, can use.
 
-## The change
+## Documentation basis
 
-`src/frame/parameters/security/import_transient_key.rs` declared a leading
-`context: Context` field. EZSP v13's `importTransientKey` (frame `0x0111`) has
-no such field: its payload is
+The protocol model follows these Silicon Labs references:
 
+- `UG100: EZSP Reference Guide`, Rev. 5.1, for EmberZNet PRO 7.4.2.
+- `UG101: UART-EZSP Gateway Protocol Reference`, Rev. 1.3, for ASHv2 over UART.
+- <https://docs.silabs.com/zigbee/latest/sisdk-ezsp-reference-guide/>, the
+  current Simplicity SDK EZSP reference.
+- <https://docs.silabs.com/zigbee/6.6/em35x/>, the older EmberZNet API
+  reference used by several Ember type descriptions.
+
+The implementation retains the legacy EZSP and Ember names where they are part
+of the crate API.
+
+## Features
+
+- `apis-saltans` implements `apis_saltans_hw::Driver` for `Ncp` and supplies
+  callback/event and data-model conversions.
+- `semver` enables `semver` support in EZSP version APIs.
+
+This crate does not depend on, re-export, or provide an implementation of
+ASHv2. An ASHv2 crate can integrate by implementing the public `Transmit` and
+`Receive` traits.
+
+## Actor model
+
+The transport API separates outbound and inbound I/O:
+
+- `Transmit` sends a complete `Frame<Commands>`.
+- `Receive` yields decoded `Frame<Parameters>` values and accepts the negotiated
+  EZSP version used by version-sensitive decoders.
+- `Client::run` is an associated constructor that wraps those transport halves
+  and returns a newly wired `Client` plus `Futures` for the caller to spawn.
+- `Futures` is exported from the crate root and contains the transmitter and
+  receiver actor futures.
+- The returned `Client` represents the actor channels before protocol
+  negotiation.
+- `Client::connect` sends the initial `version` command and returns a
+  cloneable `Connection` handle together with the asynchronous callback stream.
+- `Connection` implements `Communicate`; all EZSP command-group traits are
+  blanket-implemented for communicators.
+
+Every `Connection::communicate` call sends an actor message and waits on its own
+one-shot response. The transmitter actor assigns an EZSP sequence number,
+serializes outbound access, and correlates inbound responses by that number.
+Cloned handles can therefore be used by independent tasks without placing the
+transport behind a mutex. Asynchronous callbacks bypass response correlation
+and are delivered through a separate bounded channel.
+
+```mermaid
+flowchart LR
+    callers[Connection handle clones] --> commands[Actor inbox]
+    commands --> transmitter[Transmitter actor]
+    transmitter --> tx[Transmit implementation]
+    tx --> ncp[NCP]
+    ncp --> rx[Receive implementation]
+    rx --> receiver[Receiver task]
+    receiver --> commands
+    receiver --> callbacks[Callback stream]
 ```
-eui64 (8) + plaintextKey (16) + flags (1) = 25 bytes
+
+Transport implementations supply independent `Transmit` and `Receive` halves.
+Pass both halves to `Client::run` and spawn both returned actor futures before
+version negotiation. The transport implementation remains responsible for
+running any lower-level I/O tasks that feed those halves.
+
+## Typed protocol API
+
+EZSP command methods are grouped into traits such as `Configuration`,
+`Messaging`, `Networking`, `Security`, and `Utilities`. Each method creates a
+typed command parameter, calls `Communicate::communicate`, and converts the
+correlated response into its public return type. `Ezsp` is a convenience trait
+combining the complete command surface.
+
+The lower-level frame model remains public for transport implementations and
+protocol tooling:
+
+- `Frame`, `Header`, `Legacy`, and `Extended` model the EZSP envelope.
+- `Commands` is the outbound aggregate consumed by `Transmit` implementations.
+- `Parameters`, `Response`, and `Callback` classify decoded inbound payloads.
+- `Parsable` performs frame-ID-directed parameter decoding, while the public
+  `Decode`, `Status`, and `Error` types let adapters report compatible failures.
+- Protocol data types are exposed through `ember`, `ezsp`, and the typed
+  parameter modules.
+
+EZSP fields wider than one byte are encoded little-endian. Protocol versions
+before 8 use the three-byte legacy header; versions 8 and newer use the
+five-byte extended header. The generic receiver actor records a successful
+`version` response and passes the negotiated version to subsequent transport
+receive calls.
+
+## High-level NCP startup
+
+`Builder` owns a pre-negotiation `Client` and the complete startup
+configuration. The associated function `Client::run` creates that client and
+returns it together with the `Futures` that drive it. After the caller spawns
+those futures, `start`:
+
+1. validates that at least one application endpoint was supplied;
+2. negotiates the requested EZSP version through the running transport actors;
+3. applies concentrator, configuration, and policy settings;
+4. resumes the persisted network or forms an explicitly configured network;
+5. waits for `NetworkUp`, applies runtime radio power, and sends a many-to-one
+   route request;
+6. registers the supplied endpoints;
+7. creates the callback bridge and event-handler futures used for translation,
+   scan aggregation, APS defragmentation, and message-confirmation correlation;
+8. returns those futures with `Ncp` in a `BuildResult`.
+
+`Builder::start` does not spawn either returned future. Spawn `bridge` before
+`event_handler`, and keep both tasks running while using the `Ncp`.
+
+The event channel passed to `Builder::start` determines the application event
+type. That type must implement `TranslatableEvent`, which is automatically
+implemented for types that can be constructed from both `Callback` and
+`DefragmentedMessage`.
+
+Builder methods configure callback and actor channel capacities, the desired
+protocol version, EZSP policies and configuration values, concentrator
+parameters, radio transmit power, and baseline APS options. The named APS
+option methods enable route discovery, forced route discovery, source or
+destination EUI-64 inclusion, and address discovery for every outgoing frame.
+Per-message options supplied to the send methods are combined with this
+baseline.
+
+`Startup::Resume` restores state persisted by the NCP through `networkInit` and
+is the normal choice for restarts:
+
+```rust
+use ezsp::Startup;
+use ezsp::ezsp::network::InitBitmask;
+
+let startup = Startup::Resume(InitBitmask::NO_OPTIONS);
 ```
 
-`Command::new` keeps its four-argument shape, so the `Security` trait and every
-caller are unaffected; the context argument is accepted and discarded.
+`Startup::Initialize` intentionally replaces the current network. It attempts
+to leave the current network, installs the initial security state, and forms a
+network from `InitializationParameters`. `NetworkCredentials` groups the
+extended PAN ID, PAN ID, trust-center EUI-64, and network key; initialization
+parameters add the preconfigured trust-center link key, channel, join method,
+and initial security bitmask.
 
-## How it was found, and why it matters
+```rust
+use ezsp::{InitializationParameters, NetworkCredentials, Startup};
 
-Not from a datasheet — by comparing our frames against a reference stack on the
-same dongle and firmware (EmberZNet 7.4.4, EZSP 13).
-
-The reference's frame for this command is **30 bytes** on the wire. Ours was
-**47**. The EZSP v13 header is 5 bytes, cross-checked three ways against
-commands whose payloads are known:
-
-| command | logged length | header + payload |
-|---|---|---|
-| `SET_POLICY` | 7 | 5 + policyId(1) + decisionId(1) |
-| `SET_CONFIGURATION_VALUE` | 8 | 5 + configId(1) + value(2) |
-| `PERMIT_JOINING` | 6 | 5 + duration(1) |
-| `IMPORT_TRANSIENT_KEY` | 30 | 5 + eui64(8) + key(16) + flags(1) |
-
-So 25 bytes of payload against our 42 — a difference of exactly `Context`'s 17.
-
-The failure mode is worse than a rejected frame. The NCP reads the first 25
-bytes and answers `OK`, so it installs an EUI64 taken from the context's
-leading bytes and a key spliced across the context and `eui64` fields. Captured
-before the fix:
-
-```
-16 00 01 11 01 03 00 00 ff ff ff ff ff ff ff ff 00 00 00 00 00 00
-ff ff ff ff ff ff ff ff 5a 69 67 42 65 65 41 6c 6c 69 61 6e 63 65 30 39 00
-                        ^-- ZigBeeAlliance09, 17 bytes further into the frame
-                            than the NCP looks for it
+let credentials = NetworkCredentials::new(
+    extended_pan_id,
+    pan_id,
+    trust_center_eui64,
+    network_key,
+);
+let parameters = InitializationParameters::new(
+    credentials,
+    link_key,
+    radio_channel,
+    join_method,
+    security_bitmask,
+);
+let startup = Startup::Initialize(parameters);
 ```
 
-and after:
+`NetworkCredentials` contains secret key material. Do not log its `Debug`
+output, and protect persisted or copied credentials appropriately. Random
+credentials can be sampled with `rand`, but the distribution accepts any RNG;
+production callers are responsible for selecting a cryptographically secure
+one.
 
-```
-16 00 01 11 01 ff ff ff ff ff ff ff ff 5a 69 67 42 65 65 41 6c 6c 69 61 6e 63 65 30 39 00
-              |---------- eui64 ----------|-------- ZigBeeAlliance09 --------|flags
+## High-level NCP operations
+
+`Ncp` owns the connected communicator and endpoint metadata. It adds
+workflows that span commands and asynchronous callbacks:
+
+- active-network and energy scans, completed by `scanComplete`;
+- unicast, multicast, and broadcast APS sends;
+- application APS sequence correlation with `messageSent` callbacks through
+  EZSP message tags;
+- incoming APS fragment reassembly;
+- source-endpoint lookup from registered output clusters; and
+- event-handler shutdown through `Ncp::terminate`.
+
+Awaiting `Ncp::unicast`, `Ncp::multicast`, or `Ncp::broadcast` performs the EZSP
+send transaction. Each method requires the local source endpoint explicitly.
+The caller also supplies an application APS `sequence`, which the helper
+translates into the EZSP message tag used to correlate the later asynchronous
+`messageSent` callback. EZSP manages the APS sequence in its frame independently.
+Completed sends are reported through the application event channel using the
+application-provided sequence.
+
+Each send method takes an `aps_options: ember::aps::Options` argument and the
+application APS `sequence: u8`. Unicast also takes a
+`fragmentation_permitted: bool`. The per-message options are combined with the
+options configured on `Builder`; pass `Options::NONE` when a message needs no
+additional flags. For example, a caller can request APS encryption and retry
+for one unicast without changing the baseline used by later sends:
+
+```rust
+use ezsp::ember::aps::Options;
+
+let options = Options::ENCRYPTION.union(Options::RETRY);
+ncp.unicast(
+    source_endpoint,
+    short_id,
+    profile_id,
+    cluster_id,
+    destination_endpoint,
+    payload,
+    options,
+    sequence,
+    true,
+)
+.await?;
 ```
 
-Consequence on hardware: a Zigbee 3.0 device joins, cannot complete
-commissioning against a key the coordinator does not actually hold, and
-rejoins every few seconds forever — while every call in the log reports
-success. A SONOFF SWV-ZNU valve rejoined every 6–30 seconds before this fix and
-joined exactly once after it, then began reporting battery and on/off state
-normally.
+Oversized unicasts are split into APS fragments. Multicast and broadcast
+payloads must fit the maximum payload reported by the NCP. Fragmented unicasts
+enable APS retry in addition to the combined baseline and per-message options.
+The event handler privately acknowledges every non-final fragment back to the
+sender, so each callback drives transmission of the next fragment. The final
+fragment has no private response channel and produces the normal application
+ACK or NAK event.
+
+## APS defragmentation
+
+`Defragmenter<T>` reassembles fragmented incoming APS unicasts for any
+`T: Messaging`. `handle` acknowledges each fragment with the required empty
+`sendReply` and returns a `DefragmentedMessage` after the complete payload is
+available. The high-level event handler owns a defragmenter using its clone of
+the `Connection` actor handle and emits incoming-message events only for complete
+payloads.
+
+Reassembly keys messages by sender and APS sequence, enforces the fragment
+window and receive-buffer limits, and expires incomplete messages. Compile-time
+environment variables can override the defaults:
+
+- `EZSP_DEFRAGMENTATION_MAX_INCOMING_PACKETS`
+- `EZSP_DEFRAGMENTATION_DEFAULT_WINDOW_SIZE`
+- `EZSP_DEFRAGMENTATION_RECEIVE_BUFFER_LENGTH`
+- `EZSP_DEFRAGMENTATION_REASSEMBLY_TIMEOUT_MILLIS`
+
+## External ASHv2 integration
+
+ASHv2 support lives outside this crate. An adapter supplies an outbound type
+implementing `Transmit` and an inbound type implementing `Receive`:
+
+- `Transmit::transmit` receives a complete typed `Frame<Commands>`. An ASHv2
+  adapter serializes the header followed by the command parameters in
+  little-endian order and sends the result as one ASHv2 DATA payload.
+- `Receive::receive` accepts the currently negotiated version and obtains one
+  complete ASHv2 DATA payload, decodes its EZSP header and parameters, and
+  returns `Frame<Parameters>`. It receives `None` before the initial EZSP
+  `version` response and `Some(version)` on subsequent calls; versions at least
+  `MIN_NON_LEGACY_VERSION` use extended headers. Because this method returns
+  `Option` rather than `Result`, the adapter owns its malformed-frame policy,
+  such as logging and skipping a bad payload.
+
+Once the ASHv2-specific halves exist, the generic EZSP wiring is:
+
+```rust
+use ezsp::{Builder, Client};
+
+const EZSP_CHANNEL_SIZE: usize = 128;
+
+// `ash_transmit` and `ash_receive` are supplied by an external ASHv2 adapter
+// and implement `ezsp::Transmit` and `ezsp::Receive`, respectively.
+let (client, futures) =
+    Client::run(ash_transmit, ash_receive, EZSP_CHANNEL_SIZE);
+
+let _ezsp_transmitter = tokio::spawn(futures.transmitter);
+let _ezsp_receiver = tokio::spawn(futures.receiver);
+
+let result = Builder::new(client)
+    .start(startup, endpoints, event_sender)
+    .await?;
+
+// Spawn the returned application services in producer-to-consumer order.
+let _bridge = tokio::spawn(result.bridge);
+let _event_handler = tokio::spawn(result.event_handler);
+let ncp = result.ncp;
+```
+
+Start any lower-level ASHv2 serial worker and ASHv2 protocol tasks before the
+two EZSP actor futures. Both EZSP actors must be running before
+`Builder::start`, because startup begins with `Client::connect`. The
+`channel_size` passed to `Client::run` bounds the EZSP command/response and
+callback channels. `Builder::with_event_messages_capacity` configures the
+separate channel between the callback bridge and event handler.
+
+ASHv2 remains responsible for reliability, CRC validation, byte stuffing,
+randomization, acknowledgements, reset handling, and retransmission. Neither
+EZSP nor ASHv2 fragments protocol frames: one complete EZSP frame must fit in
+one ASHv2 DATA payload.
+
+## `apis-saltans` integration
+
+The `apis-saltans` feature adds implementations and conversions around the
+normal actor-backed `Ncp`; it does not add a wrapper type or another transport.
+
+`Ncp` implements `apis_saltans_hw::Driver`. The mapping provides:
+
+- stored endpoint descriptors through `Driver::get_endpoints`;
+- PAN and IEEE identity plus typed device-address lookup operations;
+- typed channel masks and scan durations through the existing callback
+  aggregator;
+- permit joining, with the requested duration truncated to whole seconds and
+  clamped to 255 seconds;
+- high-RAM many-to-one route requests; and
+- network, extended, broadcast, and group APSDE transmission through the
+  high-level NCP send helpers.
+
+After extracting `Ncp` from the `BuildResult`, call `Driver::into_actor` with a
+nonzero channel capacity and spawn its returned future to run the separate
+`apis-saltans` hardware actor:
+
+```rust
+use std::num::NonZeroUsize;
+
+use apis_saltans_hw::Driver;
+
+const DRIVER_CHANNEL_CAPACITY: NonZeroUsize =
+    NonZeroUsize::new(64).expect("driver channel capacity is nonzero");
+
+let (hardware, driver) = ncp.into_actor(DRIVER_CHANNEL_CAPACITY);
+tokio::spawn(driver);
+
+// `hardware` is an apis_saltans_hw::NcpHandle.
+```
+
+The feature provides bidirectional endpoint conversion. Convert the ZDP simple
+descriptors used by `apis-saltans` before passing them to the EZSP builder:
+
+```rust
+let endpoints: Box<[ezsp::Endpoint]> = simple_descriptors
+    .into_iter()
+    .map(Into::into)
+    .collect();
+```
+
+`Driver::get_endpoints` performs the reverse conversion. Endpoints containing
+an unsupported `apis-saltans` profile are logged and omitted; descriptors
+originally converted from `SimpleDescriptor` round trip without that loss.
+
+Outgoing `DataRequest<Bytes>` values preserve the profile, cluster, explicit
+source endpoint, payload, correlation counter, and supported routing fields.
+The separate counter becomes the EZSP message tag; EZSP assigns and manages its
+own APS sequence in the transmitted frame. Network destinations are sent
+directly. Extended destinations are resolved through `lookupNodeIdByEui64`.
+Broadcasts preserve their endpoint and radius. Groups use the profile's
+broadcast endpoint, the request radius as the multicast hop count, and zero
+nonmember radius.
+
+The integration maps APSDE transmission flags into EZSP APS options:
+`ACKNOWLEDGED_TRANSMISSION` controls `Options::RETRY`, and
+`SECURITY_ENABLED` controls `Options::ENCRYPTION`. Those values are then
+combined with the NCP's baseline options. `FRAGMENTATION_PERMITTED` authorizes
+the existing host-side unicast fragmentation workflow; an oversized request
+without it is rejected. `USE_NWK_KEY` and `INCLUDE_EXTENDED_NONCE` are rejected
+because the EZSP send commands cannot preserve those APSDE options.
+
+EZSP cannot faithfully implement every APSDE request form. Binding-table
+resolution, NWK source aliases, non-default group broadcast selectors, and
+nonzero unicast radii are rejected as backend errors instead of being ignored.
+
+`Driver::transmit` returns success after EZSP accepts the request and propagates
+immediate rejection as `apis_saltans_hw::Error::Backend`. The later
+`messageSent` callback produces
+`Event::Apsde(ApsdeEvent::DataConfirm { counter, confirmation })`. The
+confirmation preserves the destination, source endpoint, and raw EZSP
+completion status; EZSP supplies no transmission timestamp, so it is `()`.
+
+### Event and message conversion
+
+The feature converts these EZSP callbacks into `apis_saltans_hw::Event` values:
+
+- `stackStatus` for network up, down, opened, and closed;
+- `childJoin` for child joins and leaves; and
+- `trustCenterJoin` for unsecured joins, secured/unsecured rejoins, and leaves;
+  and
+- final acknowledged direct-unicast `messageSent` callbacks as APSDE data
+  confirmations.
+
+Complete incoming APS messages convert separately into
+`apis_saltans_hw::aps::apsde::DataIndication<bytes::Bytes, ()>`. The conversion
+preserves the received destination, source short address and endpoint, profile,
+cluster, payload, and link quality. The coordinator address is used as the
+local destination for received unicasts and broadcasts. EZSP does not expose an
+APSDE reception timestamp or key-pair handle, and the removed NWK envelope
+fields for RSSI, binding index, and source-route overhead have no corresponding
+field in the new API. Direct conversion to `apis_saltans_hw::Event` wraps the
+indication in `Event::Apsde(ApsdeEvent::DataIndication { .. })` and carries the
+incoming APS frame's `ZDO_RESPONSE_REQUIRED` option into the event's
+`zdo_response_required` field, allowing the hardware event type to be used as
+`Builder::start`'s event type.
+
+EZSP errors cross the driver boundary as
+`apis_saltans_hw::Error::Backend`, retaining the original error as its source.
+
+## Legal
+
+This project is free software and is not affiliated with Silicon Labs. Silicon
+Labs documentation is cited only to describe the public protocol implemented by
+this crate.
+
+## Contributing
+
+- Format with `cargo +nightly fmt` and verify with
+  `cargo +nightly fmt --check`.
+- Lint with `cargo clippy --all-features`.
+- Verify documentation with `cargo +nightly doc --all-features --no-deps`.

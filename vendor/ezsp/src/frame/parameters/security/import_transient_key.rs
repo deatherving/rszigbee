@@ -20,6 +20,8 @@
 //! silently. A Zigbee 3.0 device then joins and cannot finish commissioning,
 //! rejoining every few seconds, while every call in the log looks successful.
 //!
+//! See `PATCH.md` in the vendored root for the wire evidence.
+//!
 //! `Command::new` keeps its four-argument shape so the `Security` trait needs
 //! no change; the context is accepted and discarded.
 

@@ -2,7 +2,7 @@
 
 Not filed. Posting this publicly is the maintainer-facing step, so it is left
 for a human to send. Everything below is verified against real firmware; see
-`README.md` in this directory for the local patch it describes.
+`PATCH.md` in this directory for the local patch it describes.
 
 When it is filed and released, delete `vendor/ezsp`, the `[patch.crates-io]`
 entry in the workspace `Cargo.toml`, and this file.
@@ -91,3 +91,27 @@ patch does, to keep the diff to one file.
 Worth checking the sibling security-manager commands (`export_transient_key`,
 `import_key`, `export_key`) against the same length arithmetic; only
 `import_transient_key` was needed here, so only it was verified.
+
+### A related, more general observation
+
+This looks like one instance of a pattern rather than an isolated slip. The
+crate threads the negotiated version to the *transport*, so header format is
+selected correctly, but `Parsable::parse_from_le_stream(id, stream)` takes no
+version — so per-command field widths are static. Several EZSP fields change
+width at version 14:
+
+| field | below 14 | 14 and above |
+|---|---|---|
+| a status value | `u8` (`EmberStatus`) | `u32` (`sl_status_t`) |
+| `sendUnicast` message tag | `u8` | `u16` |
+| `importTransientKey` flags | present | absent |
+
+`send_unicast.rs` declares `{ status: u8, sequence: u8 }` and
+`network_init.rs` declares `{ status: u8 }`, which are correct below 14 and
+would misparse at 14 and above — reading a 4-byte status as 1 byte, then
+taking `sequence` from the status's second byte. That is not urgent for anyone
+on EZSP 13, which is what current EmberZNet negotiates, but it is silent when
+it does happen.
+
+Threading a version into parameter decoding is an API change rather than a bug
+fix, so it is raised as an observation, not folded into the patch above.

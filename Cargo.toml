@@ -73,7 +73,7 @@ overflow-checks = true
 # command went on the wire 47 bytes long where the correct frame is 30. The NCP
 # answers OK on the misparse, installing a key spliced out of the wrong bytes,
 # and a Zigbee 3.0 device can then never finish commissioning. See
-# vendor/ezsp/README.md for the wire evidence. 17.0.0 is the newest release, so
+# vendor/ezsp/PATCH.md for the wire evidence. 17.0.0 is the newest release, so
 # there is nothing to upgrade to; this goes away when the fix is upstreamed.
 [patch.crates-io]
 ezsp = { path = "vendor/ezsp" }
