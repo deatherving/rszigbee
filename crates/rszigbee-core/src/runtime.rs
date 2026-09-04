@@ -443,7 +443,11 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> ZigbeeBuilder<A, S> {
                 devices,
                 outcome,
                 coordinator,
-                network_known: stored.is_some(),
+                // Not simply `stored.is_some()`: a record written before the
+                // network key and the real frame counter were persisted is
+                // present but incomplete, and treating it as known would
+                // leave it that way forever.
+                network_known: stored.as_ref().is_some_and(|n| !n.needs_completing()),
                 registry: self.registry,
                 behaviors: self.behaviors,
                 definitions: self.definitions,

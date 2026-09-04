@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let coordinator = adapter.coordinator_ieee().await?;
     let live = adapter.network_info().await.ok();
-    persist(&store, &adapter, stored.as_ref(), coordinator, live).await?;
+    persist(&store, &mut adapter, stored.as_ref(), coordinator, live).await?;
 
     println!("coordinator: {coordinator}");
     println!("firmware:    {}", adapter.firmware().await?.version);
@@ -119,7 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// written is lost on the next restart with no way to recover it.
 async fn persist(
     store: &FileStore,
-    adapter: &EmberAdapter,
+    // `&mut` because reading the network key is a coordinator round trip, and
+    // storing a formed network without it is the one thing this function
+    // exists to prevent.
+    adapter: &mut EmberAdapter,
     stored: Option<&PersistedNetwork>,
     coordinator: Ieee,
     live: Option<rszigbee::adapter::NetworkInfo>,
@@ -140,10 +143,16 @@ async fn persist(
                 nwk_update_id: 0,
                 coordinator_ieee: coordinator,
                 key_sequence: 0,
-                // A freshly formed network starts at zero. The runtime will
-                // track this going forward; restoring a stale counter is what
-                // breaks replay protection.
+                // A freshly formed network starts at zero. The runtime tracks
+                // it from here, ahead of the live value, so a crash cannot
+                // roll it back below what was transmitted.
                 frame_counter: 0,
+                // The key the adapter just generated, which it already
+                // carries -- no need to ask the coordinator for it back. This
+                // example used to store the network *without* a key and say
+                // the coordinator holds it; a formed network stored that way
+                // cannot be recreated on replacement hardware.
+                network_key: Some(formed.network_key.clone()),
             })
             .await?;
         // The key itself is never printed.
@@ -180,11 +189,12 @@ async fn persist(
                 channel: n.channel,
                 nwk_update_id: n.nwk_update_id,
                 coordinator_ieee: coordinator,
-                key_sequence: 0,
-                frame_counter: 0,
+                key_sequence: n.key_sequence,
+                frame_counter: n.frame_counter,
+                network_key: adapter.network_key().await.unwrap_or_default(),
             })
             .await?;
-        println!("persisted the resumed network (no key: the coordinator holds it)");
+        println!("persisted the resumed network, key included where the coordinator exports it");
     }
 
     Ok(())

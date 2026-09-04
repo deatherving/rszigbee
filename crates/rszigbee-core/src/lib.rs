@@ -70,7 +70,7 @@ pub mod adapter {
     pub use rszigbee_adapter::{
         AdapterCapabilities, AdapterError, AdapterEvent, BroadcastAddress, CoordinatorAdapter,
         Destination, DisconnectReason, FirmwareInfo, MismatchPolicy, MockAdapter, MockHandle,
-        NetworkConfig, NetworkInfo, SendPolicy, StartOutcome, TxConfirm, TxFailure, TxOptions,
-        ZclRx, ZclTx, ZdoTx,
+        NetworkConfig, NetworkInfo, SecretKey, SendPolicy, StartOutcome, TxConfirm, TxFailure,
+        TxOptions, ZclRx, ZclTx, ZdoTx,
     };
 }

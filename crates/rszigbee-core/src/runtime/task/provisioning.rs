@@ -19,15 +19,24 @@ use crate::runtime::{
     ConfigureOutcome, InterviewOutcome, InterviewUpdate, RuntimeError, definitions, encode,
     interview,
 };
-use crate::store::{PersistedNetwork, ZigbeeStore};
+use crate::store::{FRAME_COUNTER_MARGIN, PersistedNetwork, ZigbeeStore};
 
 impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
-    /// Records network identity the first time we see this coordinator.
+    /// Records network identity, including what it takes to restore it.
     ///
-    /// The network **key** is deliberately absent: it is not on
-    /// [`NetworkInfo`], because a coordinator will not hand its key back. A
-    /// store record after a resume can describe the network but not recreate
-    /// it, which is what coordinator backups are for.
+    /// Both of the fields that used to be placeholders are now read from the
+    /// coordinator. That matters more than completeness:
+    ///
+    /// * The **frame counter** is what stops a restarted coordinator from
+    ///   having its frames discarded as replays. It was stored as `0`, which is
+    ///   the one value guaranteed to be wrong.
+    /// * The **network key** is what makes the record a backup rather than a
+    ///   description. The comment here used to say a coordinator would not hand
+    ///   it back; `EmberZNet` does, and the adapter now asks.
+    ///
+    /// Called on start and again on shutdown. See
+    /// [`refresh_frame_counter`](Self::refresh_frame_counter) for why once is
+    /// not enough.
     pub(super) async fn persist_network_if_needed(&mut self) {
         if self.network_known {
             return;
@@ -36,19 +45,70 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
             debug!("no network parameters available to persist yet");
             return;
         };
+        // Fetched separately, and only here, because this is the one place it
+        // is about to be written. A key that travels with the parameters ends
+        // up in a log line eventually.
+        let network_key = match self.adapter.network_key().await {
+            Ok(key) => key,
+            Err(e) => {
+                warn!(error = %e, "could not read the network key; storing the network without it");
+                None
+            }
+        };
+        if network_key.is_none() {
+            warn!(
+                "this coordinator did not export its network key, so the stored \
+                 network describes the network but cannot recreate it on \
+                 replacement hardware"
+            );
+        }
+        let counter = info.frame_counter.saturating_add(FRAME_COUNTER_MARGIN);
         let record = PersistedNetwork {
             pan_id: info.pan_id,
             extended_pan_id: info.extended_pan_id,
             channel: info.channel,
             nwk_update_id: info.nwk_update_id,
             coordinator_ieee: self.coordinator,
-            key_sequence: 0,
-            frame_counter: 0,
+            key_sequence: info.key_sequence,
+            frame_counter: counter,
+            network_key,
         };
         if let Err(e) = self.store.save_network(&record).await {
             warn!(error = %e, "could not persist network identity");
         } else {
             self.network_known = true;
+            self.persisted_frame_counter = counter;
+        }
+    }
+
+    /// Re-stores the frame counter once the live one has caught up.
+    ///
+    /// [`FRAME_COUNTER_MARGIN`] buys a bounded number of frames, not an
+    /// unbounded one. A long-running coordinator transmits past the stored
+    /// value, and from that moment a crash would roll the counter back and its
+    /// frames would be dropped as replays by every device that remembers the
+    /// higher value. So the margin is topped up when it is consumed -- which is
+    /// a write every thousand-odd frames, not one per frame.
+    pub(super) async fn refresh_frame_counter(&mut self) {
+        if !self.network_known {
+            return;
+        }
+        let Ok(info) = self.adapter.network_info().await else {
+            return;
+        };
+        if info.frame_counter < self.persisted_frame_counter {
+            return;
+        }
+        let Ok(Some(mut record)) = self.store.load_network().await else {
+            return;
+        };
+        let counter = info.frame_counter.saturating_add(FRAME_COUNTER_MARGIN);
+        record.frame_counter = counter;
+        if let Err(e) = self.store.save_network(&record).await {
+            warn!(error = %e, "could not re-store the frame counter");
+        } else {
+            debug!(counter, "frame counter margin topped up");
+            self.persisted_frame_counter = counter;
         }
     }
 

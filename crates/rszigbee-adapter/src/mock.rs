@@ -19,7 +19,7 @@ use crate::error::{AdapterError, DisconnectReason};
 use crate::tx::{ZclRx, ZclTx, ZdoTx};
 use crate::{
     AdapterCapabilities, AdapterEvent, CoordinatorAdapter, FirmwareInfo, NetworkConfig,
-    NetworkInfo, StartOutcome,
+    NetworkInfo, SecretKey, StartOutcome,
 };
 
 /// One scripted reply.
@@ -141,6 +141,9 @@ pub struct MockAdapter {
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     ieee: Ieee,
     caps: AdapterCapabilities,
+    /// What `network_key` answers. `None` models a coordinator family that
+    /// declines to export it, which is a case the runtime has to handle.
+    network_key: Option<SecretKey>,
 }
 
 impl core::fmt::Debug for MockAdapter {
@@ -150,6 +153,26 @@ impl core::fmt::Debug for MockAdapter {
 }
 
 impl MockAdapter {
+    /// The frame counter this mock reports.
+    ///
+    /// Deliberately large. A counter near zero would let "persisted nothing"
+    /// and "persisted correctly" produce the same stored value.
+    pub const FRAME_COUNTER: u32 = 0x0004_d2f1;
+
+    /// The network key this mock exports unless told otherwise.
+    pub const NETWORK_KEY: SecretKey = SecretKey::new([
+        0x5a, 0x69, 0x67, 0x42, 0x65, 0x65, 0x4b, 0x65, 0x79, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
+        0x36,
+    ]);
+
+    /// Makes `network_key` answer `None`, as a coordinator that will not
+    /// export its key does.
+    #[must_use]
+    pub fn without_exportable_key(mut self) -> Self {
+        self.network_key = None;
+        self
+    }
+
     /// Creates an adapter, its control handle and the event receiver.
     #[must_use]
     pub fn new() -> (Self, MockHandle, tokio::sync::mpsc::Receiver<AdapterEvent>) {
@@ -169,6 +192,7 @@ impl MockAdapter {
                 manufacturer: ManufacturerCode(0x1049),
                 ..AdapterCapabilities::default()
             },
+            network_key: Some(Self::NETWORK_KEY),
         };
         (me, MockHandle { shared, events: tx }, rx)
     }
@@ -249,7 +273,17 @@ impl CoordinatorAdapter for MockAdapter {
             extended_pan_id: 0xdddd_dddd_dddd_dddd,
             channel: 11,
             nwk_update_id: 0,
+            key_sequence: 0,
+            // Non-zero and non-trivial: a mock reporting zero here would let a
+            // persistence bug that stores nothing look identical to one that
+            // stores the truth.
+            frame_counter: Self::FRAME_COUNTER,
         })
+    }
+
+    async fn network_key(&mut self) -> Result<Option<SecretKey>, AdapterError> {
+        self.require_started()?;
+        Ok(self.network_key.clone())
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
@@ -541,6 +575,8 @@ mod tests {
                     extended_pan_id: 0,
                     channel: 11,
                     nwk_update_id: 0,
+                    key_sequence: 0,
+                    frame_counter: 0,
                 })
             }
             fn capabilities(&self) -> AdapterCapabilities {

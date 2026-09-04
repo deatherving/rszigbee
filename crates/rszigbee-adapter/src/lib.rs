@@ -117,6 +117,16 @@ pub struct NetworkInfo {
     pub channel: u8,
     /// Network update id.
     pub nwk_update_id: u8,
+    /// Which network key generation is in use.
+    pub key_sequence: u8,
+    /// The coordinator's outgoing network frame counter.
+    ///
+    /// Persisted, and the reason persistence matters: every secured frame
+    /// carries this and every device tracks the highest it has seen. A
+    /// coordinator that restarts with a *lower* counter has its frames
+    /// discarded as replays by every device that remembers the old one, and the
+    /// network appears to work in one direction only.
+    pub frame_counter: u32,
 }
 
 /// How to bring the network up.
@@ -250,6 +260,22 @@ pub trait CoordinatorAdapter: Send + 'static {
 
     /// Live network parameters.
     fn network_info(&mut self) -> impl Future<Output = Result<NetworkInfo, AdapterError>> + Send;
+
+    /// The network key, if this coordinator will export it.
+    ///
+    /// Separate from [`NetworkInfo`] on purpose. This is the credential for the
+    /// whole network, so it is fetched only where it is about to be stored
+    /// rather than carried along with parameters that get logged freely.
+    ///
+    /// `Ok(None)` means the coordinator declines to export it, which is a
+    /// legitimate answer and not an error: some families will not, and a
+    /// stored network without a key can still describe itself, it just cannot
+    /// be recreated on replacement hardware.
+    fn network_key(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<SecretKey>, AdapterError>> + Send {
+        async { Ok(None) }
+    }
 
     /// What this adapter supports. Synchronous: no I/O.
     fn capabilities(&self) -> AdapterCapabilities;

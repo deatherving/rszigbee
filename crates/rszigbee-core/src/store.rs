@@ -26,6 +26,7 @@ use std::sync::Mutex;
 
 use rszigbee_spec::ids::{ClusterId, EndpointId, GroupId, Ieee, Nwk, ProfileId};
 
+use crate::adapter::SecretKey;
 use crate::device::{BasicInfo, DeviceKind, InterviewState, PowerSource};
 
 /// Persisted network identity and security material.
@@ -53,9 +54,123 @@ pub struct PersistedNetwork {
     pub coordinator_ieee: Ieee,
     /// Key sequence number.
     pub key_sequence: u8,
-    /// Outgoing network frame counter.
+    /// Outgoing network frame counter, plus a safety margin.
+    ///
+    /// Stored *ahead* of the live value on purpose. See
+    /// [`FRAME_COUNTER_MARGIN`].
     pub frame_counter: u32,
+    /// The network key, when the coordinator exports it.
+    ///
+    /// `None` is a legitimate state, not a missing field: some coordinator
+    /// families decline to export it. Without the key this record describes a
+    /// network but cannot recreate it on replacement hardware, which is worth
+    /// knowing before the hardware needs replacing.
+    ///
+    /// Redacts in `Debug`. Note that it does **not** redact in the stored
+    /// file: a backup that cannot restore is not a backup, so the file is the
+    /// one place the key exists in the clear, and it should be treated with the
+    /// same care as any other credential at rest.
+    #[cfg_attr(feature = "file-store", serde(default, with = "hex_secret_key"))]
+    pub network_key: Option<SecretKey>,
 }
+
+/// Serialises a [`SecretKey`] as hex.
+///
+/// Hex rather than a byte array so a stored network stays readable and
+/// diffable, and so the field cannot be mistaken for a list of small integers.
+///
+/// It lives here rather than beside `SecretKey` because the key type belongs to
+/// the adapter crate, which has no serde dependency and should not grow one for
+/// this.
+#[cfg(feature = "file-store")]
+mod hex_secret_key {
+    use crate::adapter::SecretKey;
+
+    /// Serialises as a hex string, or null.
+    ///
+    /// `&Option<T>` rather than `Option<&T>` because serde's `with` attribute
+    /// requires a reference to the field's own type; clippy's preference does
+    /// not apply to a signature the derive macro dictates.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: serde::Serializer>(
+        key: &Option<SecretKey>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match key {
+            Some(key) => {
+                use core::fmt::Write as _;
+                let mut hex = String::with_capacity(32);
+                for byte in key.expose() {
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                serializer.serialize_str(&hex)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    /// Deserialises from a hex string, or null.
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<SecretKey>, D::Error> {
+        use serde::Deserialize as _;
+        let Some(text) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let bytes = text.as_bytes();
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom(format!(
+                "a network key is 32 hex digits, got {}",
+                bytes.len()
+            )));
+        }
+        let mut key = [0u8; 16];
+        // `as_chunks` rather than `chunks_exact`: the pair width is a constant,
+        // and this states that in the type instead of leaving a runtime length
+        // to reason about.
+        let (pairs, _remainder) = bytes.as_chunks::<2>();
+        for (slot, pair) in key.iter_mut().zip(pairs) {
+            let hex = core::str::from_utf8(pair).map_err(serde::de::Error::custom)?;
+            *slot = u8::from_str_radix(hex, 16).map_err(serde::de::Error::custom)?;
+        }
+        Ok(Some(SecretKey::new(key)))
+    }
+}
+
+impl PersistedNetwork {
+    /// Whether this record is missing something only the coordinator can
+    /// supply.
+    ///
+    /// Exists for the upgrade case. A record written before the network key and
+    /// the real frame counter were stored has neither, and treating "a record
+    /// exists" as "the record is complete" would leave every existing
+    /// installation with `frame_counter: 0` and no key permanently -- the two
+    /// fields whose absence is only discovered when the hardware needs
+    /// replacing or the coordinator restarts.
+    ///
+    /// A zero counter is the tell: a record this version writes always carries
+    /// [`FRAME_COUNTER_MARGIN`] on top of the live value, so it can never be
+    /// zero.
+    #[must_use]
+    pub const fn needs_completing(&self) -> bool {
+        self.network_key.is_none() || self.frame_counter == 0
+    }
+}
+
+/// How far ahead of the live value the frame counter is stored.
+///
+/// Every secured frame carries the outgoing counter, and every device records
+/// the highest it has seen from us. A coordinator that comes back with a
+/// *lower* counter has its frames dropped as replays, and the symptom is a
+/// network that receives but cannot command.
+///
+/// Persisting on every frame would be correct and unusable -- it is a disk
+/// write per message. Storing a value ahead of the real one gives the same
+/// guarantee for one write: after a crash the counter resumes above anything
+/// actually transmitted. The cost is skipping up to this many counter values,
+/// which is free; the space is 32 bits wide and a rollover needs billions of
+/// frames.
+pub const FRAME_COUNTER_MARGIN: u32 = 1024;
 
 /// One persisted endpoint.
 #[cfg_attr(feature = "file-store", derive(serde::Serialize, serde::Deserialize))]
@@ -247,6 +362,81 @@ pub(crate) fn epoch_millis() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// A shared store is still a store.
+///
+/// Delegating rather than requiring ownership matters for two reasons. A caller
+/// that wants to inspect or back up state while the runtime is running needs a
+/// second handle, and a test that wants to check what the runtime persisted
+/// cannot get one if the builder consumes the only copy -- which is why the
+/// frame counter went unverified for as long as it did.
+impl<S: ZigbeeStore> ZigbeeStore for std::sync::Arc<S> {
+    fn load_network(
+        &self,
+    ) -> impl Future<Output = Result<Option<PersistedNetwork>, StoreError>> + Send {
+        (**self).load_network()
+    }
+
+    fn save_network(
+        &self,
+        network: &PersistedNetwork,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).save_network(network)
+    }
+
+    fn load_devices(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PersistedDevice>, StoreError>> + Send {
+        (**self).load_devices()
+    }
+
+    fn upsert_device(
+        &self,
+        device: &PersistedDevice,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).upsert_device(device)
+    }
+
+    fn delete_device(&self, ieee: Ieee) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).delete_device(ieee)
+    }
+
+    fn load_groups(&self) -> impl Future<Output = Result<Vec<PersistedGroup>, StoreError>> + Send {
+        (**self).load_groups()
+    }
+
+    fn upsert_group(
+        &self,
+        group: &PersistedGroup,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).upsert_group(group)
+    }
+
+    fn delete_group(&self, id: GroupId) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).delete_group(id)
+    }
+
+    fn save_backup(
+        &self,
+        adapter: &str,
+        coordinator: Ieee,
+        bytes: &[u8],
+    ) -> impl Future<Output = Result<String, StoreError>> + Send {
+        (**self).save_backup(adapter, coordinator, bytes)
+    }
+
+    fn list_backups(&self) -> impl Future<Output = Result<Vec<BackupMeta>, StoreError>> + Send {
+        (**self).list_backups()
+    }
+
+    fn load_backup(&self, id: &str) -> impl Future<Output = Result<Vec<u8>, StoreError>> + Send {
+        (**self).load_backup(id)
+    }
+
+    fn flush(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        (**self).flush()
+    }
+}
+
 /// An in-memory store. The default in tests, and always compiled.
 #[derive(Debug, Default)]
 pub struct MemoryStore {
@@ -384,6 +574,7 @@ mod tests {
             coordinator_ieee: Ieee::new(0x0012_4b00_2218_9abc),
             key_sequence: 0,
             frame_counter: 12_345,
+            network_key: Some(SecretKey::new([0xab; 16])),
         }
     }
 

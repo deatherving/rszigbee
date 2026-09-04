@@ -39,13 +39,14 @@ mod session;
 
 use std::time::Duration;
 
+use ezsp::ember::Eui64;
 use ezsp::ember::aps::{Frame as ApsFrame, Options as ApsOptions};
 use ezsp::ember::message::Destination as EmberDestination;
 use ezsp::ember::network::Status as NetworkStatus;
-use ezsp::{Configuration, Messaging, Networking, Utilities};
+use ezsp::{Configuration, Messaging, Networking, Security, Utilities};
 use rszigbee_adapter::{
     AdapterCapabilities, AdapterError, AdapterEvent, CoordinatorAdapter, Destination, FirmwareInfo,
-    MismatchPolicy, NetworkConfig, NetworkInfo, StartOutcome, ZclRx, ZclTx, ZdoTx,
+    MismatchPolicy, NetworkConfig, NetworkInfo, SecretKey, StartOutcome, ZclRx, ZclTx, ZdoTx,
 };
 use rszigbee_spec::ids::{ClusterId, EndpointId, Ieee, ManufacturerCode, Nwk};
 use tracing::{debug, info, warn};
@@ -360,12 +361,53 @@ impl CoordinatorAdapter for EmberAdapter {
             .get_network_parameters()
             .await
             .map_err(|e| map_ezsp(&e))?;
+        // The frame counter and key sequence are security-manager state, not
+        // network parameters, so they need a second call. Worth making: the
+        // outgoing frame counter is the field whose loss breaks a network, and
+        // reporting a placeholder here is what made it look persisted when it
+        // was not.
+        let key_info = self
+            .connection()?
+            .get_network_key_info()
+            .await
+            .map_err(|e| map_ezsp(&e))?;
+
         Ok(NetworkInfo {
             pan_id: params.pan_id(),
             extended_pan_id: eui64_to_ieee(params.extended_pan_id()).raw(),
             channel: params.radio_channel(),
             nwk_update_id: params.nwk_update_id(),
+            key_sequence: key_info.network_key_sequence_number(),
+            frame_counter: key_info.network_key_frame_counter(),
         })
+    }
+
+    async fn network_key(&mut self) -> Result<Option<SecretKey>, AdapterError> {
+        use silizium::zigbee::security::man::{Context, DerivedKeyType, Flags, KeyType};
+
+        // EmberZNet does export the network key, which the runtime's own
+        // comment used to claim it would not. Without it a stored network
+        // describes itself but cannot be recreated on replacement hardware,
+        // which is the entire point of storing it.
+        let context = Context::new(
+            KeyType::Network,
+            0,
+            DerivedKeyType::None,
+            Eui64::from([0u8; 8]),
+            0,
+            Flags::NONE,
+            0,
+        );
+        match self.connection()?.export_key(context).await {
+            Ok(key) => Ok(Some(SecretKey::new(key))),
+            // A refusal is an answer, not a failure: firmware built without
+            // key export says so here, and a caller that treats it as an error
+            // cannot start at all on that build.
+            Err(e) => {
+                warn!("the coordinator would not export its network key: {e}");
+                Ok(None)
+            }
+        }
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
@@ -610,7 +652,7 @@ fn map_ezsp(e: &ezsp::Error) -> AdapterError {
 }
 
 /// Converts an EZSP EUI64 into an [`Ieee`].
-fn eui64_to_ieee(eui: ezsp::ember::Eui64) -> Ieee {
+fn eui64_to_ieee(eui: Eui64) -> Ieee {
     // EUI64 renders big-endian in text but is little-endian on the wire; go via
     // the byte array rather than the string form so no parsing is involved.
     Ieee::from_be_bytes(eui.into_array())

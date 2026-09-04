@@ -429,6 +429,7 @@ fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::SecretKey;
     use crate::device::InterviewState;
     use rszigbee_spec::ids::{EndpointId, Nwk};
 
@@ -456,6 +457,7 @@ mod tests {
             coordinator_ieee: Ieee::new(0x94a0_81ff_fed9_6e5c),
             key_sequence: 0,
             frame_counter: 12_345,
+            network_key: Some(SecretKey::new([0xab; 16])),
         }
     }
 

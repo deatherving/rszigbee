@@ -28,6 +28,7 @@
 // `#[cfg(test)]`.
 #![allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::adapter::SecretKey;
 use rszigbee_spec::ids::{EndpointId, GroupId, Ieee, Nwk};
 
 use super::{PersistedDevice, PersistedGroup, PersistedNetwork, StoreError, ZigbeeStore};
@@ -100,6 +101,13 @@ async fn the_network_round_trips_and_is_replaced_not_appended<S: ZigbeeStore>(st
         coordinator_ieee: Ieee::new(0x0017_8801_00dc_4d3f),
         key_sequence: 1,
         frame_counter: 4_294_967_000,
+        // A key whose bytes are all distinct and none of them zero: a backend
+        // that truncated, padded or byte-swapped it would round-trip a
+        // uniform key unnoticed.
+        network_key: Some(SecretKey::new([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ])),
     };
     store.save_network(&network).await.expect("save_network");
     assert_eq!(
@@ -121,6 +129,25 @@ async fn the_network_round_trips_and_is_replaced_not_appended<S: ZigbeeStore>(st
             .map(|n| n.frame_counter),
         Some(4_294_967_100),
         "saving the network again must replace it: a stale frame counter breaks replay protection"
+    );
+
+    // And the absent case, which is a real state rather than a missing field:
+    // a coordinator that declines to export its key stores `None`, and a
+    // backend that turned that into an all-zero key would produce a record
+    // that looks restorable and is not.
+    network.network_key = None;
+    store
+        .save_network(&network)
+        .await
+        .expect("save_network without a key");
+    assert_eq!(
+        store
+            .load_network()
+            .await
+            .expect("load_network")
+            .map(|n| n.network_key),
+        Some(None),
+        "a network stored without a key must load back without one, not with a zero key"
     );
 }
 

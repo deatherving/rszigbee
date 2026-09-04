@@ -89,6 +89,10 @@ pub fn spawn<A: CoordinatorAdapter, S: ZigbeeStore>(config: Config<A, S>, handle
         interview_on_join: config.interview_on_join,
         coordinator: config.coordinator,
         network_known: config.network_known,
+        // Zero until a record is written. Also correct as a starting value if a
+        // network was already stored: the first refresh reads the live counter
+        // and tops the margin up, which is cheap and cannot roll anything back.
+        persisted_frame_counter: 0,
         devices,
         pending_zdo: HashMap::new(),
         pending_zcl: HashMap::new(),
@@ -113,6 +117,12 @@ struct Task<A, S> {
     interview_on_join: bool,
     coordinator: Ieee,
     network_known: bool,
+    /// The frame counter value currently on disk, including its margin.
+    ///
+    /// Tracked so the periodic refresh is a comparison rather than a store
+    /// read, and so a write happens only when the margin has actually been
+    /// consumed.
+    persisted_frame_counter: u32,
     devices: Inventory,
     pending_zdo: HashMap<(ZdoClusterId, u8), PendingZdo>,
     pending_zcl: HashMap<(ClusterId, u8), PendingZcl>,
@@ -187,6 +197,7 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
                 _ = ticker.tick() => {
                     self.expire_pending_zdo();
                     self.run_due_reachability().await;
+                    self.refresh_frame_counter().await;
                 }
             }
         }
@@ -208,6 +219,9 @@ impl<A: CoordinatorAdapter, S: ZigbeeStore> Task<A, S> {
         for (_, pending) in self.pending_zcl.drain() {
             let _ = pending.reply.send(Err(RuntimeError::Stopped));
         }
+        // Last chance to record where the counter actually got to. A clean
+        // stop should not leave the stored value a thousand frames stale.
+        self.refresh_frame_counter().await;
         let flushed = self.store.flush().await;
         let stopped = self.adapter.stop().await;
         // Both are attempted before either error is returned: skipping the

@@ -45,6 +45,149 @@ mod tests {
         (zigbee, control)
     }
 
+    /// What the runtime persisted about its network, once it has.
+    ///
+    /// Polled rather than read once: `start()` returns as soon as the task is
+    /// spawned, and the task persists the network inside its own first pass, so
+    /// a single read races it. Polling with a deadline keeps the assertion
+    /// about *what* was stored rather than about scheduling order.
+    async fn persisted_network(store: &std::sync::Arc<MemoryStore>) -> PersistedNetwork {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(network) = store.load_network().await.expect("load_network") {
+                    return network;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the runtime should persist its network shortly after start")
+    }
+
+    #[tokio::test]
+    async fn the_frame_counter_is_persisted_ahead_of_the_live_value() {
+        // The field the store's own documentation calls the most dangerous one.
+        // It used to be written as a literal `0`, which is the single value
+        // guaranteed to be wrong, and nothing noticed because no test read it
+        // back.
+        //
+        // Stored *ahead* of the live counter on purpose: after a crash the
+        // coordinator must resume above anything it actually transmitted, or
+        // every device that remembers the higher value discards its frames as
+        // replays.
+        let (adapter, _control, events) = MockAdapter::new();
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let zigbee = Zigbee::builder(adapter, events, std::sync::Arc::clone(&store))
+            .start()
+            .await
+            .expect("start");
+
+        let network = persisted_network(&store).await;
+        assert_eq!(
+            network.frame_counter,
+            MockAdapter::FRAME_COUNTER + rszigbee_core::store::FRAME_COUNTER_MARGIN,
+            "the stored counter must lead the live one by exactly the margin"
+        );
+        assert!(
+            network.frame_counter > MockAdapter::FRAME_COUNTER,
+            "a stored counter at or below the live one is a counter that can roll back"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn the_network_key_is_persisted_so_the_record_can_restore_the_network() {
+        // Without the key the record describes a network but cannot recreate
+        // it, which is the difference between a backup and a note. The runtime
+        // used to assume a coordinator would never hand its key back; the
+        // adapter now asks, and this checks the answer is kept.
+        let (adapter, _control, events) = MockAdapter::new();
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let zigbee = Zigbee::builder(adapter, events, std::sync::Arc::clone(&store))
+            .start()
+            .await
+            .expect("start");
+
+        let network = persisted_network(&store).await;
+        let key = network
+            .network_key
+            .as_ref()
+            .expect("the mock exports a key, so it must be stored");
+        assert_eq!(
+            key.expose(),
+            MockAdapter::NETWORK_KEY.expose(),
+            "the stored key must be the coordinator's, byte for byte"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_coordinator_that_will_not_export_its_key_still_starts() {
+        // The negative control, and a real case: some coordinator families
+        // decline. `None` has to be a recorded state rather than a failure,
+        // because treating it as an error would make the library unusable on
+        // that hardware.
+        let (adapter, _control, events) = MockAdapter::new();
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let zigbee = Zigbee::builder(
+            adapter.without_exportable_key(),
+            events,
+            std::sync::Arc::clone(&store),
+        )
+        .start()
+        .await
+        .expect("a coordinator that will not export its key must still start");
+
+        let network = persisted_network(&store).await;
+        assert!(
+            network.network_key.is_none(),
+            "a key that was never exported must be absent, not a zero key that looks restorable"
+        );
+        // Everything else about the network is still recorded.
+        assert_ne!(network.pan_id, 0, "the rest of the network is still known");
+        zigbee.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn the_stored_key_never_appears_in_a_debug_rendering() {
+        // The reason `SecretKey` is a newtype. A stored network is exactly the
+        // kind of struct that ends up in a log line or an error, and `[u8; 16]`
+        // prints itself in full.
+        let (adapter, _control, events) = MockAdapter::new();
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let zigbee = Zigbee::builder(adapter, events, std::sync::Arc::clone(&store))
+            .start()
+            .await
+            .expect("start");
+
+        let network = persisted_network(&store).await;
+        let rendered = format!("{network:?}");
+
+        // Checked against the key's own renderings rather than against
+        // individual byte values: a byte's decimal digits collide with the
+        // frame counter and the PAN id, which made an earlier version of this
+        // assertion fail on a correctly redacted string.
+        let mut hex = String::new();
+        for byte in MockAdapter::NETWORK_KEY.expose() {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        let debug_array = format!("{:?}", MockAdapter::NETWORK_KEY.expose());
+        assert!(
+            !rendered.contains(&hex),
+            "the key leaked as hex into the debug rendering: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&debug_array),
+            "the key leaked as a byte array into the debug rendering: {rendered}"
+        );
+        assert!(
+            rendered.contains("redacted"),
+            "the key field should say it is redacted, got {rendered}"
+        );
+        zigbee.stop().await.expect("stop");
+    }
+
     /// Waits for the first event satisfying `want`, or panics after a second.
     async fn wait_for<T>(stream: &mut EventStream, want: impl Fn(&Event) -> Option<T>) -> T {
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -487,6 +630,7 @@ mod tests {
                 coordinator_ieee: Ieee::new(0xdead_beef_dead_beef),
                 key_sequence: 0,
                 frame_counter: 0,
+                network_key: None,
             })
             .await
             .expect("save");
