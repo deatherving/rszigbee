@@ -566,6 +566,7 @@ dependencies = [
  "getrandom 0.3.4",
  "rszigbee-adapter",
  "rszigbee-spec",
+ "silizium",
  "thiserror",
  "tokio",
  "tokio-serial",

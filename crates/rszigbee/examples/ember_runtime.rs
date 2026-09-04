@@ -80,9 +80,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 MismatchPolicy::Fail
             },
         })
-        // Nothing has joined, so there is nothing to interview automatically.
-        // The coordinator is interviewed explicitly below.
-        .interview_on_join(false)
+        // With --permit-join a real device can arrive, and interviewing it is
+        // the point: the interview is what resolves a definition, and until a
+        // device joined on hardware that path had only ever run against the
+        // mock. Without the flag nothing can join, so the coordinator is
+        // interviewed explicitly below instead.
+        .interview_on_join(permit_join)
         .start()
         .await
     {

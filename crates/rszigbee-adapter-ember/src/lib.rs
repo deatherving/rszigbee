@@ -246,6 +246,13 @@ impl CoordinatorAdapter for EmberAdapter {
         // before the network comes up.
         bringup::configure_endpoints(&mut session.connection, SILABS).await?;
 
+        // Stack configuration, before the network comes up: EZSP refuses these
+        // writes once it is running. Stack profile, security level and
+        // end-device capacity are advertised in every beacon, and a device
+        // whose scan reads the wrong value never attempts to associate -- so
+        // getting these wrong produces silence, not an error.
+        bringup::configure_stack(&mut session.connection).await?;
+
         // Trust-centre policies, also before the stack comes up. `permitJoining`
         // only opens the association window; whether a device is *admitted* is
         // a separate decision, and the EmberZNet default admits only devices
@@ -393,6 +400,15 @@ impl CoordinatorAdapter for EmberAdapter {
         // EZSP takes seconds as u8; 255 means "forever", which is a footgun we
         // do not expose, so clamp to 254.
         let secs = u8::try_from(duration.as_secs()).unwrap_or(254).min(254);
+
+        // The transient key has to be in place *before* the window opens, or a
+        // device that joins immediately finds no key to commission against.
+        if secs == 0 {
+            bringup::clear_commissioning_key(self.connection()?).await?;
+        } else {
+            bringup::install_commissioning_key(self.connection()?).await?;
+        }
+
         self.connection()?
             .permit_joining(secs.into())
             .await

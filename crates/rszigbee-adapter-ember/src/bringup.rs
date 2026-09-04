@@ -26,10 +26,11 @@
 //! traffic to, and `Active_EP_rsp` comes back empty. Observed exactly that.
 
 use ezsp::ezsp::network::InitBitmask;
-use ezsp::{Configuration, Networking};
+use ezsp::ember::Eui64;
+use ezsp::{Configuration, Networking, Security};
 use rszigbee_adapter::AdapterError;
 use rszigbee_spec::ids::{ClusterId, EndpointId, ManufacturerCode, ProfileId};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// The coordinator's primary application endpoint.
 pub const PRIMARY_ENDPOINT: EndpointId = EndpointId(1);
@@ -136,6 +137,190 @@ pub async fn configure_endpoints(
     Ok(())
 }
 
+/// `EmberDecisionBitmask`: admit a joining device that has no link key yet.
+const ALLOW_JOIN_BIT: u8 = 0x01;
+
+/// `EmberDecisionBitmask`: admit an unsecured rejoin.
+///
+/// A device that has lost its parent -- a sleepy end device whose battery was
+/// changed, or one that woke outside its poll timeout -- comes back this way.
+/// Without the bit it can never return, which reads as a device that paired
+/// once and then died.
+const ALLOW_UNSECURED_REJOIN_BIT: u8 = 0x02;
+
+/// Sets the stack configuration a coordinator needs before its network is up.
+///
+/// These are not tuning knobs. [`StackProfile`] and [`SecurityLevel`] are
+/// advertised in every beacon the coordinator sends, and
+/// [`MaxEndDeviceChildren`] is the end-device capacity a joining device reads
+/// out of that beacon. A scanning device that finds the wrong profile, or no
+/// capacity for it, **never sends an association request at all** -- so the
+/// symptom is silence rather than a refusal, with nothing logged anywhere,
+/// which is what makes it expensive to diagnose.
+///
+/// EZSP refuses these writes once the stack is up, answering `InvalidCall`, so
+/// this has to run before `network_init`.
+///
+/// The previous value is read back and logged before each write. NCP defaults
+/// vary by firmware build, and without the old value a failure here cannot be
+/// told apart from a default that was already correct.
+///
+/// [`StackProfile`]: ezsp::ezsp::config::Id::StackProfile
+/// [`SecurityLevel`]: ezsp::ezsp::config::Id::SecurityLevel
+/// [`MaxEndDeviceChildren`]: ezsp::ezsp::config::Id::MaxEndDeviceChildren
+pub async fn configure_stack(connection: &mut ezsp::Connection) -> Result<(), AdapterError> {
+    use ezsp::ezsp::config;
+
+    /// `(id, value, required, what it affects)`.
+    ///
+    /// `required` marks the three a device reads out of a beacon: getting one
+    /// of those wrong makes the coordinator invisible to a joining device, so
+    /// failing to set it is worth refusing to start over. The rest are
+    /// timeouts and table sizes where a firmware default that differs is a
+    /// difference in behaviour, not a broken network.
+    const SETTINGS: &[(config::Id, u16, bool, &str)] = &[
+        (
+            config::Id::StackProfile,
+            2,
+            true,
+            "ZigBee Pro; advertised in every beacon",
+        ),
+        (
+            config::Id::SecurityLevel,
+            5,
+            true,
+            "standard security; advertised in every beacon",
+        ),
+        (
+            config::Id::MaxEndDeviceChildren,
+            32,
+            true,
+            "beacon end-device capacity; sleepy devices join as children",
+        ),
+        (
+            config::Id::EndDevicePollTimeout,
+            8,
+            false,
+            "how long a sleepy child may stay silent before it is dropped",
+        ),
+        (
+            config::Id::IndirectTransmissionTimeout,
+            7680,
+            false,
+            "how long a message for a sleepy child is held for its next poll",
+        ),
+        (
+            config::Id::TrustCenterAddressCacheSize,
+            2,
+            false,
+            "trust-centre address cache",
+        ),
+    ];
+
+    for &(id, value, required, affects) in SETTINGS {
+        let before = connection.get_configuration_value(id).await.ok();
+        match connection.set_configuration_value(id, value).await {
+            Ok(()) => debug!(?id, value, ?before, affects, "stack configuration set"),
+            Err(e) if !required => {
+                warn!(?id, value, affects, "optional stack configuration refused: {e}");
+            }
+            Err(e) => {
+                return Err(AdapterError::Transport(format!(
+                    "cannot set {id:?} to {value} ({affects}): {e}. A device \
+                     scanning for a network reads this out of the coordinator's \
+                     beacon, and will not attempt to join at all if it is wrong."
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// The well-known Zigbee 3.0 default trust-centre link key.
+///
+/// Public by design, and specified: `ZigBeeAlliance09` in ASCII. Zigbee 3.0
+/// devices that ship without an install code use it to protect the one exchange
+/// in which they are given the real network key. It is not a secret and is not
+/// treated as one -- the security it provides is that the window in which it is
+/// accepted is short and operator-initiated, which is why it is installed when
+/// joining opens and removed when joining closes.
+const WELL_KNOWN_TC_LINK_KEY: [u8; 16] = *b"ZigBeeAlliance09";
+
+/// Installs the commissioning key for the duration of a join window.
+///
+/// Without this a Zigbee 3.0 device joins at the MAC layer and then cannot
+/// finish commissioning: it has no key with which to receive the network key,
+/// so it gives up and rejoins, over and over. The observable symptom is a
+/// device that keeps announcing itself every few seconds, never answers a ZDO
+/// request, and never stops blinking -- while every join callback looks
+/// perfectly healthy.
+///
+/// Found by differential test: the reference stack imports this key at the
+/// moment joining opens (`IMPORT_TRANSIENT_KEY`, frame `0x0111`) and clears it
+/// when joining closes. We did neither.
+///
+/// The key is *transient* deliberately. A joining device is trusted with it
+/// only inside the window an operator opened; it is not left in the key table
+/// afterwards, which is what [`clear_commissioning_key`] is for.
+pub async fn install_commissioning_key(
+    connection: &mut ezsp::Connection,
+) -> Result<(), AdapterError> {
+    use silizium::zigbee::security::man::{Context, DerivedKeyType, Flags, KeyType};
+
+    /// Applies to whichever device joins, since which one that will be is not
+    /// known until it does. A specific EUI64 here would only admit a device
+    /// whose address was known in advance, which is the install-code flow.
+    const ANY_DEVICE: [u8; 8] = [0xff; 8];
+
+    let context = Context::new(
+        // A trust-centre link key with a timeout: the NCP ages it out on its
+        // own, so a window that is never explicitly closed does not leave the
+        // key accepted indefinitely.
+        KeyType::TcLinkWithTimeout,
+        0,
+        DerivedKeyType::None,
+        Eui64::from(ANY_DEVICE),
+        0,
+        Flags::NONE,
+        0,
+    );
+
+    connection
+        .import_transient_key(
+            context,
+            Eui64::from(ANY_DEVICE),
+            WELL_KNOWN_TC_LINK_KEY,
+            Flags::NONE,
+        )
+        .await
+        .map_err(|e| {
+            AdapterError::Transport(format!(
+                "cannot install the commissioning key: {e}. Without it a Zigbee \
+                 3.0 device can join but cannot finish commissioning, and will \
+                 rejoin indefinitely."
+            ))
+        })?;
+
+    debug!("commissioning key installed for this join window");
+    Ok(())
+}
+
+/// Removes the commissioning key again once joining is closed.
+///
+/// The counterpart to [`install_commissioning_key`]. Leaving the well-known key
+/// installed would let a device commission against a key everyone knows at any
+/// later moment, rather than only inside a window an operator opened.
+pub async fn clear_commissioning_key(
+    connection: &mut ezsp::Connection,
+) -> Result<(), AdapterError> {
+    connection.clear_transient_link_keys().await.map_err(|e| {
+        AdapterError::Transport(format!("cannot clear the commissioning key: {e}"))
+    })?;
+    debug!("commissioning key cleared");
+    Ok(())
+}
+
 /// Sets the trust-centre policies a coordinator needs to admit a device.
 ///
 /// `permitJoining` only opens the MAC association window. Whether a device is
@@ -164,8 +349,21 @@ pub async fn configure_join_policies(
 ) -> Result<(), AdapterError> {
     use ezsp::ezsp::{decision, policy};
 
-    /// Allow joins and rejoins from devices without a preconfigured key.
-    const ALLOW_JOINS: u8 = decision::Id::AllowJoins as u8;
+    /// `ALLOW_JOINS | ALLOW_UNSECURED_REJOINS`, as a bitmask.
+    ///
+    /// Deliberately a literal rather than `decision::Id::AllowJoins`, which is
+    /// `0x00`. That name belongs to the pre-EZSP-8 `EzspDecisionId` enum, in
+    /// which zero meant "send the network key in the clear to every joiner".
+    /// `EmberZNet` 7.x reinterprets the same field as `EmberDecisionBitmask`,
+    /// where zero is `DEFAULT_CONFIGURATION` -- deny every join. So the enum
+    /// sets the policy to *deny* under a name that reads as *allow*, and the
+    /// log line below then reports joining as enabled while nothing can join.
+    ///
+    /// Found by differential test against a reference stack on `EmberZNet`
+    /// 7.4.4: a device in pairing mode produced no callback of any kind across a
+    /// full 240-second window, while the reference admitted the same device in
+    /// about thirty seconds with this field set to 3.
+    const ALLOW_JOINS: u8 = ALLOW_JOIN_BIT | ALLOW_UNSECURED_REJOIN_BIT;
     /// Answer a joining device's key request with the current link key.
     const SEND_CURRENT_KEY: u8 = decision::Id::AllowTcKeyRequestsAndSendCurrentKey as u8;
     /// Refuse application link key requests.
@@ -193,7 +391,8 @@ pub async fn configure_join_policies(
             .await
             .map_err(|e| {
                 AdapterError::Transport(format!(
-                    "cannot set the {id:?} policy to {what}: {e}. Without it a                      device cannot join even while joining is open."
+                    "cannot set the {id:?} policy to {what}: {e}. Without it a \
+                     device cannot join even while joining is open."
                 ))
             })?;
     }
