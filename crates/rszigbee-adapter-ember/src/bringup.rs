@@ -25,8 +25,8 @@
 //! A coordinator with no application endpoint has nowhere to deliver ZCL
 //! traffic to, and `Active_EP_rsp` comes back empty. Observed exactly that.
 
-use ezsp::ezsp::network::InitBitmask;
 use ezsp::ember::Eui64;
+use ezsp::ezsp::network::InitBitmask;
 use ezsp::{Configuration, Networking, Security};
 use rszigbee_adapter::AdapterError;
 use rszigbee_spec::ids::{ClusterId, EndpointId, ManufacturerCode, ProfileId};
@@ -222,7 +222,10 @@ pub async fn configure_stack(connection: &mut ezsp::Connection) -> Result<(), Ad
         match connection.set_configuration_value(id, value).await {
             Ok(()) => debug!(?id, value, ?before, affects, "stack configuration set"),
             Err(e) if !required => {
-                warn!(?id, value, affects, "optional stack configuration refused: {e}");
+                warn!(
+                    ?id,
+                    value, affects, "optional stack configuration refused: {e}"
+                );
             }
             Err(e) => {
                 return Err(AdapterError::Transport(format!(
@@ -314,9 +317,10 @@ pub async fn install_commissioning_key(
 pub async fn clear_commissioning_key(
     connection: &mut ezsp::Connection,
 ) -> Result<(), AdapterError> {
-    connection.clear_transient_link_keys().await.map_err(|e| {
-        AdapterError::Transport(format!("cannot clear the commissioning key: {e}"))
-    })?;
+    connection
+        .clear_transient_link_keys()
+        .await
+        .map_err(|e| AdapterError::Transport(format!("cannot clear the commissioning key: {e}")))?;
     debug!("commissioning key cleared");
     Ok(())
 }
@@ -386,15 +390,12 @@ pub async fn configure_join_policies(
             "refuse application key requests",
         ),
     ] {
-        connection
-            .set_policy(id, decision)
-            .await
-            .map_err(|e| {
-                AdapterError::Transport(format!(
-                    "cannot set the {id:?} policy to {what}: {e}. Without it a \
+        connection.set_policy(id, decision).await.map_err(|e| {
+            AdapterError::Transport(format!(
+                "cannot set the {id:?} policy to {what}: {e}. Without it a \
                      device cannot join even while joining is open."
-                ))
-            })?;
+            ))
+        })?;
     }
 
     debug!("trust-centre policies set: joins allowed, link keys answered");
