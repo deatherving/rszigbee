@@ -49,26 +49,26 @@ jobs:
     # The stable, deterministic counterpart in rszigbee-spec's tests does gate
     # the build.
     continue-on-error: true
-    # `rust-toolchain.toml` pins this repository to stable, and rustup honours
-    # it whenever cargo is invoked inside the tree -- including from inside
-    # `cargo fuzz`. Installing nightly is therefore not enough on its own: the
-    # build underneath still selected stable and rejected `-Z sanitizer`.
-    # RUSTUP_TOOLCHAIN overrides the file for this job only.
-    env:
-      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
-      # Nightly only here. libfuzzer requires it, and the rest of the suite
-      # deliberately stays on stable.
-      - uses: dtolnay/rust-toolchain@nightly
+      # Stable, like everything else here.
+      #
+      # `cargo fuzz` defaults to AddressSanitizer, which needs `-Z sanitizer`
+      # and therefore nightly. `--sanitizer none` drops it and builds on
+      # stable. That costs very little: these crates are pure Rust and forbid
+      # `unsafe`, so memory safety is already the compiler's guarantee and
+      # ASan has almost nothing to find. What the fuzzer is actually hunting
+      # is panics and hangs on malformed input -- the lints forbid panicking
+      # on bytes from a device -- and libFuzzer finds those either way.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz
       # Short runs: enough to catch a regression that crashes immediately,
       # which is what a CI fuzz pass can honestly claim. Finding deep bugs
       # takes hours and belongs in a dedicated run, not on every push.
-      - run: cargo fuzz run zcl -- -max_total_time=60
-      - run: cargo fuzz run zdo -- -max_total_time=60
-      - run: cargo fuzz run tuya -- -max_total_time=60
+      - run: cargo fuzz run zcl --sanitizer none -- -max_total_time=60
+      - run: cargo fuzz run zdo --sanitizer none -- -max_total_time=60
+      - run: cargo fuzz run tuya --sanitizer none -- -max_total_time=60
 
   licenses:
     name: dependency licences
