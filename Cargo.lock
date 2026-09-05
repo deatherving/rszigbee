@@ -328,9 +328,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rsezsp"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93fc93fce1caf49df61d635b073be559ad1b1d76474ce299a72b9f79ea76e8e3"
+checksum = "ec2685ddcfb104e0a3b32718a10075e2158438c931ab47f91607ca8aec32834c"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
