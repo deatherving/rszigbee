@@ -29,10 +29,20 @@ rszigbee-adapter-ember = { path = "crates/rszigbee-adapter-ember", version = "0.
 rszigbee-mqtt = { path = "crates/rszigbee-mqtt", version = "0.0.1" }
 rszigbee-gateway = { path = "crates/rszigbee-gateway", version = "0.0.1" }
 
-# Our own EZSP implementation. A path dependency until it is published: this
-# workspace is the first real consumer, so the two move together while the
-# command surface is still growing.
-rsezsp = { path = "../rsezsp" }
+# Our own EZSP implementation, not yet published to crates.io.
+#
+# Pinned to a revision rather than a branch: an unpinned git dependency makes
+# the build depend on whatever that branch happens to point at, so a green CI
+# run here would say nothing about the code that actually shipped.
+#
+# To work on both repositories at once, add an uncommitted override:
+#
+#   # .cargo/config.toml
+#   [patch."https://github.com/deatherving/rsezsp"]
+#   rsezsp = { path = "../rsezsp" }
+#
+# and bump the rev here when the change lands upstream.
+rsezsp = { git = "https://github.com/deatherving/rsezsp", rev = "e95a3de30ff7b8d08c03c5a5d42da61d582eca37" }
 
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }

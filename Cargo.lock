@@ -329,6 +329,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rsezsp"
 version = "0.1.0"
+source = "git+https://github.com/deatherving/rsezsp?rev=e95a3de30ff7b8d08c03c5a5d42da61d582eca37#e95a3de30ff7b8d08c03c5a5d42da61d582eca37"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
