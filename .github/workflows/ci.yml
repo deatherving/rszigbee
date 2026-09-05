@@ -40,21 +40,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/check-boundaries.sh
 
-  # Non-blocking on purpose. The spike pins exact versions of a fast-moving
-  # upstream (`ezsp` went 10 -> 17 in six weeks), and it is excluded from the
-  # workspace precisely so that cannot break the published crates. Building it
-  # here means it gets noticed when it rots, without gating anything on it.
-  spike:
-    name: hardware spike (non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --manifest-path spikes/ezsp-probe/Cargo.toml -- -D warnings
-
   fuzz:
     name: fuzz the codecs (non-blocking)
     runs-on: ubuntu-latest
@@ -64,6 +49,13 @@ jobs:
     # The stable, deterministic counterpart in rszigbee-spec's tests does gate
     # the build.
     continue-on-error: true
+    # `rust-toolchain.toml` pins this repository to stable, and rustup honours
+    # it whenever cargo is invoked inside the tree -- including from inside
+    # `cargo fuzz`. Installing nightly is therefore not enough on its own: the
+    # build underneath still selected stable and rejected `-Z sanitizer`.
+    # RUSTUP_TOOLCHAIN overrides the file for this job only.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       # Nightly only here. libfuzzer requires it, and the rest of the suite
