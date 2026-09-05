@@ -4,6 +4,23 @@ on:
   push: { branches: [main] }
   pull_request:
 
+# Third-party actions are pinned to full commit SHAs, not to tags.
+#
+# A tag is a movable pointer. `@v4` fetches whatever that name points at when
+# the job runs, and executes it with access to the checkout and the job token
+# -- so if an action's repository or a maintainer's account is compromised and
+# the tag is repointed, the next run here executes the attacker's code with no
+# change on our side, no diff and no notification. That is not hypothetical;
+# it is how the tj-actions/changed-files compromise reached thousands of
+# repositories in 2025.
+#
+# A commit SHA is content-addressed and cannot be repointed. The trailing
+# comment keeps it readable, and Dependabot understands the format, so updates
+# still arrive as ordinary pull requests.
+#
+# This does not protect against a malicious *new* version that we then merge.
+# It protects against a version we already trust changing underneath us.
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -13,13 +30,14 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned; toolchain chosen below
+        with: { toolchain: "stable", components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with: { tool: nextest }
       - run: cargo nextest run --workspace --all-features
       # Doc examples are part of the public API surface; they must not rot.
       - run: cargo test --workspace --all-features --doc
@@ -35,9 +53,10 @@ jobs:
     name: architectural boundaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned; toolchain chosen below
+        with: { toolchain: "stable" }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: ./scripts/check-boundaries.sh
 
   fuzz:
@@ -50,7 +69,7 @@ jobs:
     # the build.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Stable, like everything else here.
       #
       # `cargo fuzz` defaults to AddressSanitizer, which needs `-Z sanitizer`
@@ -60,8 +79,9 @@ jobs:
       # ASan has almost nothing to find. What the fuzzer is actually hunting
       # is panics and hangs on malformed input -- the lints forbid panicking
       # on bytes from a device -- and libFuzzer finds those either way.
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned; toolchain chosen below
+        with: { toolchain: "stable" }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install cargo-fuzz
       # Short runs: enough to catch a regression that crashes immediately,
       # which is what a CI fuzz pass can honestly claim. Finding deep bugs
@@ -74,15 +94,18 @@ jobs:
     name: dependency licences
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned; toolchain chosen below
+        with: { toolchain: "stable" }
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with: { tool: cargo-deny }
       - run: cargo deny check
 
   msrv:
     name: minimum supported Rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned; toolchain chosen below
+        with: { toolchain: "1.90.0" }
       - run: cargo check --workspace --all-features
