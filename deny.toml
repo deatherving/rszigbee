@@ -47,8 +47,3 @@ yanked = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Our own EZSP driver, not yet on crates.io. Allowed by exact URL rather than
-# by relaxing `unknown-git`, so any *other* git dependency still has to be a
-# deliberate decision -- a git source is code that no registry ever reviewed
-# and that can be force-pushed out from under a build.
-allow-git = ["https://github.com/deatherving/rsezsp"]
