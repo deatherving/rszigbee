@@ -13,23 +13,11 @@ categories = ["network-programming"]
 [dependencies]
 rszigbee-spec.workspace = true
 rszigbee-adapter.workspace = true
+rsezsp.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "io-util"] }
 
-# Pinned exactly, not caret. `ezsp` went 10 -> 17 in six weeks with two yanked
-# releases; a range would make a verified-against-hardware build unreproducible.
-# Bumps get re-verified with spikes/ezsp-probe against real firmware.
-ashv2 = { version = "=13.0.0", features = ["ezsp"] }
-ezsp = "=17.0.0"
-# `ezsp`'s public API takes silizium's security-manager types (`man::Context`
-# and friends) and does not re-export them, so importing a transient
-# commissioning key is impossible without depending on it directly. Pinned to
-# the exact version `ezsp` resolves, because two incompatible copies of these
-# types in the tree would not unify and the call would not typecheck. Already
-# present transitively, so this adds no new licence.
-silizium = "=3.1.0"
-tokio-serial = "=5.5.0"
 getrandom = "0.3"
 
 [dev-dependencies]

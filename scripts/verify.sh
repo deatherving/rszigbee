@@ -44,10 +44,6 @@ if [[ "$FAST" != "--fast" ]]; then
   step "clippy (no default features)" cargo clippy --workspace --all-targets --no-default-features -- -D warnings
   step "clippy (default features)"    cargo clippy --workspace --all-targets -- -D warnings
   step "check (all features)"         cargo check --workspace --all-features
-  if [[ -f spikes/ezsp-probe/Cargo.toml ]]; then
-    step "clippy (hardware spike)" \
-      cargo clippy --all-targets --manifest-path spikes/ezsp-probe/Cargo.toml -- -D warnings
-  fi
   # Licences. Only if the tool is installed; CI always has it.
   if command -v cargo-deny >/dev/null; then
     step "dependency licences" cargo deny check

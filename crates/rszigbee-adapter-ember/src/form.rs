@@ -19,12 +19,13 @@
 //! Ember adapter uses, because those flags are a correctness requirement rather
 //! than a choice.
 
-use ezsp::ember::join::Method as JoinMethod;
-use ezsp::ember::network::Parameters as NetworkParameters;
-use ezsp::ember::security::initial;
-use ezsp::ember::{Eui64, key::Data as KeyData};
-use ezsp::{Networking, Security};
+use rsezsp::Eui64;
+use rsezsp::ezsp::command::{FormNetwork, SetInitialSecurityState};
+use rsezsp::types::network::NetworkParameters;
+use rsezsp::types::security::{InitialSecurityBitmask, InitialSecurityState, SecurityKey};
 use rszigbee_adapter::{AdapterError, NetworkConfig, SecretKey};
+
+use crate::connection::{Connection, check, context};
 use rszigbee_spec::ids::Ieee;
 use tracing::{info, warn};
 
@@ -92,18 +93,21 @@ const fn sanitise_pan_id(candidate: u16) -> u16 {
 /// * `REQUIRE_ENCRYPTED_KEY` — the network key is only ever delivered
 ///   encrypted, to a joiner that has proved it holds the link key. Without this
 ///   the NCP may hand the network key out in the clear.
-fn initial_security_state(network_key: &SecretKey) -> initial::State {
-    initial::State::new(
-        initial::Bitmask::TRUST_CENTER_GLOBAL_LINK_KEY
-            | initial::Bitmask::HAVE_PRECONFIGURED_KEY
-            | initial::Bitmask::HAVE_NETWORK_KEY
-            | initial::Bitmask::TRUST_CENTER_USES_HASHED_LINK_KEY
-            | initial::Bitmask::REQUIRE_ENCRYPTED_KEY,
-        KeyData::from(ZIGBEE_ALLIANCE_09),
-        KeyData::from(*network_key.expose()),
-        0,
-        Eui64::default(),
-    )
+fn initial_security_state(network_key: &SecretKey) -> InitialSecurityState {
+    let bitmask = InitialSecurityBitmask::TRUST_CENTER_GLOBAL_LINK_KEY
+        .union(InitialSecurityBitmask::HAVE_PRECONFIGURED_KEY)
+        .union(InitialSecurityBitmask::HAVE_NETWORK_KEY)
+        .union(InitialSecurityBitmask::TRUST_CENTER_USES_HASHED_LINK_KEY)
+        .union(InitialSecurityBitmask::REQUIRE_ENCRYPTED_KEY);
+
+    InitialSecurityState {
+        bitmask,
+        preconfigured_key: SecurityKey::new(ZIGBEE_ALLIANCE_09),
+        network_key: SecurityKey::new(*network_key.expose()),
+        network_key_sequence_number: 0,
+        // No preconfigured trust centre: this coordinator is the trust centre.
+        preconfigured_trust_center_eui64: Eui64::new(0),
+    }
 }
 
 /// What forming produced, so the caller can persist it.
@@ -129,7 +133,7 @@ pub struct Formed {
 /// network and that `MismatchPolicy::Form` was requested. This function does
 /// not re-check, because the check belongs where the policy lives.
 pub async fn form(
-    connection: &mut ezsp::Connection,
+    connection: &Connection,
     coordinator: Ieee,
     config: &NetworkConfig,
 ) -> Result<Formed, AdapterError> {
@@ -156,28 +160,39 @@ pub async fn form(
          on this coordinator will be orphaned"
     );
 
-    connection
-        .set_initial_security_state(initial_security_state(&network_key))
+    let response = connection
+        .command(SetInitialSecurityState {
+            state: initial_security_state(&network_key),
+        })
         .await
-        .map_err(|e| {
-            AdapterError::Transport(format!("cannot set the initial security state: {e}"))
-        })?;
+        .map_err(|e| context("cannot set the initial security state", &e))?;
+    check("setting the initial security state", response.status)?;
 
-    connection
-        .form_network(NetworkParameters::new(
-            Eui64::from(extended_pan_id.to_be_bytes()),
-            pan_id,
-            // Default transmit power. Raising it is a per-deployment tuning
-            // decision, not something to guess at formation time.
-            8,
-            config.channel,
-            JoinMethod::MacAssociation,
-            0,
-            0,
-            1_u32 << config.channel,
-        ))
+    // The extended PAN id is written big-endian in text and little-endian on
+    // the wire, the same as an EUI64, so the bytes reverse here rather than
+    // being passed straight through.
+    let mut extended_pan_id_wire = extended_pan_id.to_be_bytes();
+    extended_pan_id_wire.reverse();
+
+    let response = connection
+        .command(FormNetwork {
+            parameters: NetworkParameters {
+                extended_pan_id: extended_pan_id_wire,
+                pan_id,
+                // Default transmit power. Raising it is a per-deployment
+                // tuning decision, not something to guess at formation time.
+                radio_tx_power: 8,
+                radio_channel: config.channel,
+                // MAC association: the ordinary way a device joins.
+                join_method: 0,
+                nwk_manager_id: 0,
+                nwk_update_id: 0,
+                channels: 1_u32 << config.channel,
+            },
+        })
         .await
-        .map_err(|e| AdapterError::Transport(format!("form_network failed: {e}")))?;
+        .map_err(|e| context("form_network failed", &e))?;
+    check("forming the network", response.status)?;
 
     info!(
         pan_id = format_args!("0x{pan_id:04x}"),

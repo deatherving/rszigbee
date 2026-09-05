@@ -10,7 +10,7 @@ members = ["crates/*"]
 # making the whole suite nightly-only to get coverage-guided fuzzing would be a
 # bad trade. The stable counterpart lives in rszigbee-spec's tests and runs on
 # every push.
-exclude = ["spikes/ezsp-probe", "fuzz"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"
@@ -28,6 +28,11 @@ rszigbee-devices = { path = "crates/rszigbee-devices", version = "0.0.1", defaul
 rszigbee-adapter-ember = { path = "crates/rszigbee-adapter-ember", version = "0.0.1" }
 rszigbee-mqtt = { path = "crates/rszigbee-mqtt", version = "0.0.1" }
 rszigbee-gateway = { path = "crates/rszigbee-gateway", version = "0.0.1" }
+
+# Our own EZSP implementation. A path dependency until it is published: this
+# workspace is the first real consumer, so the two move together while the
+# command surface is still growing.
+rsezsp = { path = "../rsezsp" }
 
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }
@@ -68,12 +73,3 @@ missing_errors_doc = "allow"
 [profile.release]
 overflow-checks = true
 
-# Local patch of `ezsp` 17.0.0, one file changed. Its `importTransientKey`
-# frame declares a 17-byte `Context` field that EZSP v13 does not carry, so the
-# command went on the wire 47 bytes long where the correct frame is 30. The NCP
-# answers OK on the misparse, installing a key spliced out of the wrong bytes,
-# and a Zigbee 3.0 device can then never finish commissioning. See
-# vendor/ezsp/PATCH.md for the wire evidence. 17.0.0 is the newest release, so
-# there is nothing to upgrade to; this goes away when the fix is upstreamed.
-[patch.crates-io]
-ezsp = { path = "vendor/ezsp" }

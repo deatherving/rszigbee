@@ -173,8 +173,8 @@ The rules that hold the design together are **checked in CI** by
 these are the three that matter most:
 
 1. **`rszigbee-core` does not know EZSP exists.** Only
-   `rszigbee-adapter-ember` depends on `ezsp`, `ashv2` or a serial port. Adding
-   a second coordinator family touches one crate.
+   `rszigbee-adapter-ember` depends on `rsezsp` or a serial port. Adding a
+   second coordinator family touches one crate.
 2. **`rszigbee-core` has no MQTT, and no JSON by default.** Serialisation lives
    at system boundaries; persistence is behind a `file-store` feature so a
    caller using only `MemoryStore` links no JSON parser.
@@ -335,9 +335,6 @@ temperature report, a rejoin at a new short address. Against real hardware,
 both interview the coordinator, which needs no other device on the network.
 Binding and attribute reporting do need a second device, and stay unverified
 against hardware until one exists.
-`spikes/ezsp-probe` is a read-only probe for checking whether a dongle speaks
-EZSP at all; it is safe against a live network.
-
 ## Credit
 
 rszigbee is a reimplementation. It exists because of work other people did
@@ -361,12 +358,15 @@ first, and it would not be possible without it.
   both informed the architecture. apis-saltans independently arrived at almost
   the same coordinator-adapter boundary, which is good evidence it is the right
   one.
-- **[uplg/maison](https://github.com/uplg/maison)** (MIT) — showed that the
-  `ezsp` + `ashv2` crates drive real Silicon Labs hardware from Rust, and its
-  EZSP bring-up sequence was the reference for ours.
+- **[uplg/maison](https://github.com/uplg/maison)** (MIT) — showed that Rust
+  can drive real Silicon Labs hardware, and its EZSP bring-up sequence was the
+  reference for ours.
 - **[`ezsp`](https://github.com/PaulmannLighting/ezsp)** and
-  **[`ashv2`](https://github.com/PaulmannLighting/ashv2)** (MIT) — the EZSP
-  protocol and ASHv2 framing, used as dependencies rather than reimplemented.
+  **[`ashv2`](https://github.com/PaulmannLighting/ashv2)** (MIT) — carried this
+  project's EZSP transport through its first working coordinator and its first
+  device join. Now replaced by [`rsezsp`](https://github.com/deatherving/rsezsp),
+  which we wrote to own the version-aware wire format directly; `ezsp` remains a
+  behavioural reference for frame layouts.
 
 Full notices in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md);
 more detail on what is owed to whom in [`ATTRIBUTION.md`](ATTRIBUTION.md).

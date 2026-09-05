@@ -64,14 +64,14 @@ fi
 # EZSP exists. Only rszigbee-adapter-ember does.
 for crate in rszigbee-core rszigbee-adapter rszigbee-spec; do
   t="$(tree "$crate")"
-  for forbidden in ezsp ashv2 tokio-serial serialport; do
+  for forbidden in rsezsp ezsp ashv2 tokio-serial serialport; do
     if grep -qi "^${forbidden} " <<<"$t"; then
       bad "$crate depends on '${forbidden}'"
       note "Coordinator protocols belong in rszigbee-adapter-<family> only."
     fi
   done
 done
-grep -qiE '^(ezsp|ashv2) ' <<<"$(tree rszigbee-core)$(tree rszigbee-adapter)$(tree rszigbee-spec)" \
+grep -qiE '^(rsezsp|ezsp|ashv2) ' <<<"$(tree rszigbee-core)$(tree rszigbee-adapter)$(tree rszigbee-spec)" \
   || ok "EZSP is contained in the Ember adapter"
 
 # --- the facade must expose every internal crate a user needs ---

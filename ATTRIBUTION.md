@@ -69,8 +69,26 @@ boundary, which is decent evidence the boundary is right. A future adapter for
 Ziggurat and trait alignment with apis-saltans are both on the roadmap, and both
 are better pursued as conversations than as forks.
 
+## PaulmannLighting/ezsp and ashv2 (MIT)
+
+Were this project's EZSP transport through its first working coordinator, its
+first device join, and every hardware finding recorded up to that point. The
+transport is now [`rsezsp`](https://github.com/deatherving/rsezsp), written to
+own the version-aware wire format directly; that is a difference in emphasis
+rather than a judgement on these crates, which are mature, actively maintained
+and a reasonable choice for anyone who does not need that.
+
+`ezsp` remains a behavioural reference for command frame layouts. Several
+commands in `rsezsp` were cross-checked against it, with attribution kept in
+the code.
+
 ## uplg/maison (MIT)
 
 Proved that the `ezsp` + `ashv2` crate stack drives real Silicon Labs hardware
 from Rust. Used as a working reference for the EZSP bring-up sequence — the part
 the specification does not tell you — not as a source of code.
+
+That bring-up sequence is still the one this project uses, and the debt stands
+even though the transport underneath it has since been replaced by
+[`rsezsp`](https://github.com/deatherving/rsezsp). Knowing the sequence was
+achievable, and in what order, is what made the rest tractable.

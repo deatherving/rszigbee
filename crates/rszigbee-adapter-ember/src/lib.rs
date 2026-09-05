@@ -33,17 +33,24 @@
 #![forbid(unsafe_code)]
 
 pub mod bringup;
+pub mod connection;
 pub mod fingerprint;
 pub mod form;
 mod session;
 
 use std::time::Duration;
 
-use ezsp::ember::Eui64;
-use ezsp::ember::aps::{Frame as ApsFrame, Options as ApsOptions};
-use ezsp::ember::message::Destination as EmberDestination;
-use ezsp::ember::network::Status as NetworkStatus;
-use ezsp::{Configuration, Messaging, Networking, Security, Utilities};
+use rsezsp::Eui64;
+use rsezsp::ezsp::callback::Callback;
+use rsezsp::ezsp::command::{
+    ExportKey, GetEui64, GetNetworkKeyInfo, GetNetworkParameters, GetValue, NetworkState,
+    PermitJoining, SendBroadcast, SendMulticast, SendUnicast,
+};
+use rsezsp::types::aps::{ApsFrame, ApsOptions, UnicastType};
+use rsezsp::types::network::{NetworkStatus, NodeId, ValueId};
+use rsezsp::types::security::SecurityManContext;
+
+use crate::connection::{Connection, check, context};
 use rszigbee_adapter::{
     AdapterCapabilities, AdapterError, AdapterEvent, CoordinatorAdapter, Destination, FirmwareInfo,
     MismatchPolicy, NetworkConfig, NetworkInfo, SecretKey, StartOutcome, ZclRx, ZclTx, ZdoTx,
@@ -137,10 +144,10 @@ impl EmberAdapter {
         self.formed.as_ref()
     }
 
-    fn connection(&mut self) -> Result<&mut ezsp::Connection, AdapterError> {
+    fn connection(&self) -> Result<&Connection, AdapterError> {
         self.session
-            .as_mut()
-            .map(|s| &mut s.connection)
+            .as_ref()
+            .map(|s| &s.connection)
             .ok_or(AdapterError::NotConnected)
     }
 
@@ -158,12 +165,12 @@ impl EmberAdapter {
     /// and report a failure that did not happen. Route discovery has no route
     /// to discover.
     fn aps_frame_for(req: &ZclTx, sequence: u8) -> ApsFrame {
-        let mut options = ApsOptions::empty();
+        let mut options = ApsOptions(0);
         let group = match req.dest {
             Destination::Unicast { .. } => {
-                options |= ApsOptions::RETRY;
+                options = options.union(ApsOptions::RETRY);
                 if !req.options.disable_recovery {
-                    options |= ApsOptions::ENABLE_ROUTE_DISCOVERY;
+                    options = options.union(ApsOptions::ENABLE_ROUTE_DISCOVERY);
                 }
                 0
             }
@@ -173,15 +180,15 @@ impl EmberAdapter {
             Destination::Group(group) => group.0,
             Destination::Broadcast(_) => 0,
         };
-        ApsFrame::new(
-            req.profile.0,
-            req.cluster.0,
-            req.source_endpoint.0,
-            req.endpoint.0,
+        ApsFrame {
+            profile_id: req.profile.0,
+            cluster_id: req.cluster.0,
+            source_endpoint: req.source_endpoint.0,
+            destination_endpoint: req.endpoint.0,
             options,
-            group,
+            group_id: group,
             sequence,
-        )
+        }
     }
 
     /// Derives the start outcome from the coordinator's reported network state.
@@ -195,10 +202,8 @@ impl EmberAdapter {
         policy: MismatchPolicy,
     ) -> Result<StartOutcome, AdapterError> {
         match state {
-            NetworkStatus::JoinedNetwork | NetworkStatus::JoinedNetworkNoParent => {
-                Ok(StartOutcome::Resumed)
-            }
-            NetworkStatus::NoNetwork => match policy {
+            s if s.is_joined() => Ok(StartOutcome::Resumed),
+            NetworkStatus::NO_NETWORK => match policy {
                 MismatchPolicy::Form => Ok(StartOutcome::Formed),
                 MismatchPolicy::Fail => Err(AdapterError::NetworkMismatch(
                     "the coordinator has no network formed. Forming one would create a \
@@ -209,7 +214,7 @@ impl EmberAdapter {
             },
             // Mid-transition. Resuming from here would race the stack.
             other => Err(AdapterError::NetworkMismatch(format!(
-                "coordinator is in a transient network state ({other:?}); retry shortly"
+                "coordinator is in a transient network state ({other}); retry shortly"
             ))),
         }
     }
@@ -266,45 +271,47 @@ impl CoordinatorAdapter for EmberAdapter {
         network: &NetworkConfig,
         _backup: Option<&[u8]>,
     ) -> Result<StartOutcome, AdapterError> {
-        let mut session = session::connect(&self.path, self.settings, session::VERSIONS).await?;
+        let mut session = session::connect(&self.path, self.settings).await?;
 
         let eui = session
             .connection
-            .get_eui64()
+            .command(GetEui64)
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the coordinator address", &e))?
+            .eui64;
         let coordinator = eui64_to_ieee(eui);
 
         // Order matters and is not arbitrary. EZSP rejects `addEndpoint` once
         // the stack is running, so endpoints and identity must be configured
         // before the network comes up.
-        bringup::configure_endpoints(&mut session.connection, SILABS).await?;
+        bringup::configure_endpoints(&session.connection, SILABS).await?;
 
         // Stack configuration, before the network comes up: EZSP refuses these
         // writes once it is running. Stack profile, security level and
         // end-device capacity are advertised in every beacon, and a device
         // whose scan reads the wrong value never attempts to associate -- so
         // getting these wrong produces silence, not an error.
-        bringup::configure_stack(&mut session.connection).await?;
+        bringup::configure_stack(&session.connection).await?;
 
         // Trust-centre policies, also before the stack comes up. `permitJoining`
         // only opens the association window; whether a device is *admitted* is
         // a separate decision, and the EmberZNet default admits only devices
         // with a preconfigured key -- which no ordinary device has. Without
         // this, joining opened and nothing ever joined.
-        bringup::configure_join_policies(&mut session.connection).await?;
+        bringup::configure_join_policies(&session.connection).await?;
 
         // Then resume any stored network. Skipping this makes `networkState`
         // report NoNetwork on a coordinator that has a perfectly good network,
         // which would lead a stack straight into forming over it. Observed on
         // real hardware.
-        let stored = bringup::resume_stored_network(&mut session.connection).await?;
+        let stored = bringup::resume_stored_network(&session.connection).await?;
 
         let state = session
             .connection
-            .network_state()
+            .command(NetworkState)
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the network state", &e))?
+            .state;
 
         info!(
             ezsp = session.version,
@@ -316,7 +323,7 @@ impl CoordinatorAdapter for EmberAdapter {
 
         let outcome = EmberAdapter::outcome_for(state, network.on_mismatch)?;
         if matches!(outcome, StartOutcome::Formed) {
-            let formed = form::form(&mut session.connection, coordinator, network).await?;
+            let formed = form::form(&session.connection, coordinator, network).await?;
             // The caller must persist `network_key`: losing it loses the
             // network, and every joined device would need re-pairing. Held here
             // so the runtime can read it back once persistence is wired.
@@ -355,9 +362,10 @@ impl CoordinatorAdapter for EmberAdapter {
         }
         let eui = self
             .connection()?
-            .get_eui64()
+            .command(GetEui64)
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the coordinator address", &e))?
+            .eui64;
         let ieee = eui64_to_ieee(eui);
         self.coordinator = Some(ieee);
         Ok(ieee)
@@ -365,15 +373,17 @@ impl CoordinatorAdapter for EmberAdapter {
 
     async fn firmware(&mut self) -> Result<FirmwareInfo, AdapterError> {
         let ezsp_version = self.session.as_ref().map_or(0, |s| s.version);
-        let raw = self
+        let response = self
             .connection()?
-            .get_value(ezsp::ezsp::value::Id::VersionInfo)
+            .command(GetValue {
+                value_id: ValueId::VERSION_INFO,
+            })
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the firmware version", &e))?;
+        check("reading the firmware version", response.status)?;
 
         // VERSION_INFO is build (u16 LE), major, minor, patch, special, type.
-        let bytes: Vec<u8> = raw.iter().copied().collect();
-        let version = match bytes.as_slice() {
+        let version = match response.value.as_slice() {
             [b0, b1, major, minor, patch, special, ..] => {
                 let build = u16::from(*b0) | (u16::from(*b1) << 8);
                 format!("EmberZNet {major}.{minor}.{patch}.{special} build {build}")
@@ -389,11 +399,13 @@ impl CoordinatorAdapter for EmberAdapter {
     }
 
     async fn network_info(&mut self) -> Result<NetworkInfo, AdapterError> {
-        let (_node_type, params) = self
+        let network = self
             .connection()?
-            .get_network_parameters()
+            .command(GetNetworkParameters)
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the network parameters", &e))?;
+        check("reading the network parameters", network.status)?;
+        let params = network.parameters;
         // The frame counter and key sequence are security-manager state, not
         // network parameters, so they need a second call. Worth making: the
         // outgoing frame counter is the field whose loss breaks a network, and
@@ -401,41 +413,50 @@ impl CoordinatorAdapter for EmberAdapter {
         // was not.
         let key_info = self
             .connection()?
-            .get_network_key_info()
+            .command(GetNetworkKeyInfo)
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot read the network key info", &e))?;
+        check("reading the network key info", key_info.status)?;
 
         Ok(NetworkInfo {
-            pan_id: params.pan_id(),
-            extended_pan_id: eui64_to_ieee(params.extended_pan_id()).raw(),
-            channel: params.radio_channel(),
-            nwk_update_id: params.nwk_update_id(),
-            key_sequence: key_info.network_key_sequence_number(),
-            frame_counter: key_info.network_key_frame_counter(),
+            pan_id: params.pan_id,
+            // The extended PAN id is an eight-byte identifier in the same
+            // little-endian wire order as an EUI64, not an address, so it goes
+            // through the same conversion rather than a separate one.
+            extended_pan_id: Ieee::from_be_bytes(params.extended_pan_id).raw(),
+            channel: params.radio_channel,
+            nwk_update_id: params.nwk_update_id,
+            key_sequence: key_info.network_key_sequence_number,
+            frame_counter: key_info.network_key_frame_counter,
         })
     }
 
     async fn network_key(&mut self) -> Result<Option<SecretKey>, AdapterError> {
-        use silizium::zigbee::security::man::{Context, DerivedKeyType, Flags, KeyType};
-
         // EmberZNet does export the network key, which the runtime's own
         // comment used to claim it would not. Without it a stored network
         // describes itself but cannot be recreated on replacement hardware,
         // which is the entire point of storing it.
-        let context = Context::new(
-            KeyType::Network,
-            0,
-            DerivedKeyType::None,
-            Eui64::from([0u8; 8]),
-            0,
-            Flags::NONE,
-            0,
-        );
-        match self.connection()?.export_key(context).await {
-            Ok(key) => Ok(Some(SecretKey::new(key))),
-            // A refusal is an answer, not a failure: firmware built without
-            // key export says so here, and a caller that treats it as an error
-            // cannot start at all on that build.
+        match self
+            .connection()?
+            .command(ExportKey {
+                context: SecurityManContext::network_key(),
+            })
+            .await
+        {
+            // A refusal is an answer, not a failure: firmware built without key
+            // export says so here, and a caller that treats it as an error
+            // cannot start at all on that build. That applies to a non-success
+            // status just as much as to a transport failure.
+            Ok(response) if response.status.is_ok() => {
+                Ok(Some(SecretKey::new(*response.key.expose())))
+            }
+            Ok(response) => {
+                warn!(
+                    "the coordinator would not export its network key: {}",
+                    response.status
+                );
+                Ok(None)
+            }
             Err(e) => {
                 warn!("the coordinator would not export its network key: {e}");
                 Ok(None)
@@ -484,10 +505,12 @@ impl CoordinatorAdapter for EmberAdapter {
             bringup::install_commissioning_key(self.connection()?).await?;
         }
 
-        self.connection()?
-            .permit_joining(secs.into())
+        let response = self
+            .connection()?
+            .command(PermitJoining { duration: secs })
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot open the join window", &e))?;
+        check("opening the join window", response.status)?;
         info!(seconds = secs, "permit join");
         Ok(())
     }
@@ -512,39 +535,46 @@ impl CoordinatorAdapter for EmberAdapter {
         // a binding, for the reason above: the type cannot be named here.
         match request.dest {
             Destination::Unicast { nwk, .. } => {
-                self.connection()?
-                    .send_unicast(
-                        EmberDestination::Direct(ezsp::ember::NodeId::from(nwk.raw())),
-                        aps,
-                        tag,
-                        request.frame.iter().copied().collect(),
-                    )
+                let response = self
+                    .connection()?
+                    .command(SendUnicast {
+                        unicast_type: UnicastType::Direct,
+                        index_or_destination: nwk.raw(),
+                        aps_frame: aps,
+                        message_tag: tag.into(),
+                        message: request.frame.clone(),
+                    })
                     .await
-                    .map_err(|e| map_ezsp(&e))?;
+                    .map_err(|e| context("cannot send the ZCL frame", &e))?;
+                check("sending the ZCL frame", response.status)?;
             }
             Destination::Group(_) => {
-                self.connection()?
-                    .send_multicast(
-                        aps,
-                        GROUP_HOPS,
-                        NONMEMBER_RADIUS,
-                        tag,
-                        request.frame.iter().copied().collect(),
-                    )
+                let response = self
+                    .connection()?
+                    .command(SendMulticast {
+                        aps_frame: aps,
+                        hops: GROUP_HOPS,
+                        nonmember_radius: NONMEMBER_RADIUS,
+                        message_tag: tag.into(),
+                        message: request.frame.clone(),
+                    })
                     .await
-                    .map_err(|e| map_ezsp(&e))?;
+                    .map_err(|e| context("cannot send the group ZCL frame", &e))?;
+                check("sending the group ZCL frame", response.status)?;
             }
             Destination::Broadcast(address) => {
-                self.connection()?
-                    .send_broadcast(
-                        ezsp::ember::NodeId::from(address.to_nwk().raw()),
-                        aps,
-                        BROADCAST_RADIUS,
-                        tag,
-                        request.frame.iter().copied().collect(),
-                    )
+                let response = self
+                    .connection()?
+                    .command(SendBroadcast {
+                        destination: NodeId(address.to_nwk().raw()),
+                        aps_frame: aps,
+                        radius: BROADCAST_RADIUS,
+                        message_tag: tag.into(),
+                        message: request.frame.clone(),
+                    })
                     .await
-                    .map_err(|e| map_ezsp(&e))?;
+                    .map_err(|e| context("cannot broadcast the ZCL frame", &e))?;
+                check("broadcasting the ZCL frame", response.status)?;
             }
         }
 
@@ -572,26 +602,29 @@ impl CoordinatorAdapter for EmberAdapter {
         // cluster = the ZDO cluster id. The transaction sequence number is the
         // first payload byte and is the caller's, because it is what the
         // caller matches the response against.
-        let aps = ApsFrame::new(
-            0x0000,
-            request.cluster.0,
-            0,
-            0,
-            ApsOptions::RETRY | ApsOptions::ENABLE_ROUTE_DISCOVERY,
-            0,
-            0,
-        );
+        let aps = ApsFrame {
+            profile_id: 0x0000,
+            cluster_id: request.cluster.0,
+            source_endpoint: 0,
+            destination_endpoint: 0,
+            options: ApsOptions::RETRY.union(ApsOptions::ENABLE_ROUTE_DISCOVERY),
+            group_id: 0,
+            sequence: 0,
+        };
         let tag = self.tag.next();
 
-        self.connection()?
-            .send_unicast(
-                EmberDestination::Direct(ezsp::ember::NodeId::from(nwk.raw())),
-                aps,
-                tag,
-                request.payload.iter().copied().collect(),
-            )
+        let response = self
+            .connection()?
+            .command(SendUnicast {
+                unicast_type: UnicastType::Direct,
+                index_or_destination: nwk.raw(),
+                aps_frame: aps,
+                message_tag: tag.into(),
+                message: request.payload.clone(),
+            })
             .await
-            .map_err(|e| map_ezsp(&e))?;
+            .map_err(|e| context("cannot send the ZDO request", &e))?;
+        check("sending the ZDO request", response.status)?;
 
         // Same as send_zcl: EZSP confirms at the APS layer and delivers the
         // response separately. The runtime matches it from AdapterEvent::Zdo
@@ -601,13 +634,27 @@ impl CoordinatorAdapter for EmberAdapter {
 }
 
 /// Drains EZSP callbacks and translates the ones the runtime acts on.
+///
+/// This is the boundary. `rsezsp` hands over what the NCP said, decoded but not
+/// interpreted -- `device_update` is a raw byte there because what that byte
+/// *means* is a Zigbee question, not a transport one. Deciding it here is what
+/// keeps the driver free of opinions about devices.
 async fn pump_callbacks(
-    mut callbacks: tokio::sync::mpsc::Receiver<ezsp::Callback>,
+    mut callbacks: tokio::sync::mpsc::Receiver<Callback>,
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
 ) {
-    use ezsp::ember::device::Update as DeviceUpdate;
-    use ezsp::parameters::messaging::handler::Handler as Messaging;
-    use ezsp::parameters::trust_center::handler::Handler as TrustCenter;
+    /// `EmberDeviceUpdate::DEVICE_LEFT`.
+    ///
+    /// A departure arrives on the same callback as an arrival, distinguished
+    /// only by this byte. Treating every one of them as a join would resurrect
+    /// devices that had just left.
+    const DEVICE_LEFT: u8 = 0x02;
+
+    /// ZDO traffic travels on profile 0.
+    ///
+    /// Handing a ZDO frame to a ZCL decoder produces confident nonsense, so the
+    /// split happens here, where the profile is still visible.
+    const ZDO_PROFILE: u16 = 0x0000;
 
     while let Some(cb) = callbacks.recv().await {
         let translated = match &cb {
@@ -619,71 +666,61 @@ async fn pump_callbacks(
             // runtime does on a join -- creating the record, interviewing,
             // resolving a definition, configuring reporting -- could therefore
             // never trigger against real hardware.
-            ezsp::Callback::TrustCenter(TrustCenter::TrustCenterJoin(j)) => {
-                let ieee = eui64_to_ieee(j.new_node_eui64());
-                let nwk = Nwk::new(j.new_node_id());
-                match j.status() {
-                    // A departure is reported by the same callback as an
-                    // arrival, distinguished only by this status. Treating
-                    // every one of them as a join would resurrect devices that
-                    // had just left.
-                    Ok(DeviceUpdate::DeviceLeft) => {
-                        info!(%ieee, "device left the network");
-                        Some(AdapterEvent::DeviceLeft {
-                            ieee: Some(ieee),
-                            nwk: Some(nwk),
-                        })
-                    }
-                    Ok(update) => {
-                        info!(%ieee, nwk = nwk.raw(), ?update, "device joined");
-                        Some(AdapterEvent::DeviceJoined {
-                            ieee: Some(ieee),
-                            nwk,
-                        })
-                    }
-                    // A status this build does not model. Reported as a join
-                    // rather than dropped: the callback only fires for a
-                    // device whose membership changed, and a device the
-                    // runtime knows about is recoverable while one it never
-                    // heard of is not.
-                    Err(raw) => {
-                        warn!(%ieee, raw, "unmodelled trust-centre join status");
-                        Some(AdapterEvent::DeviceJoined {
-                            ieee: Some(ieee),
-                            nwk,
-                        })
-                    }
+            Callback::TrustCenterJoin {
+                node_id,
+                eui64,
+                device_update,
+                ..
+            } => {
+                let ieee = eui64_to_ieee(*eui64);
+                let nwk = Nwk::new(node_id.0);
+                if *device_update == DEVICE_LEFT {
+                    info!(%ieee, "device left the network");
+                    Some(AdapterEvent::DeviceLeft {
+                        ieee: Some(ieee),
+                        nwk: Some(nwk),
+                    })
+                } else {
+                    info!(%ieee, nwk = nwk.raw(), device_update, "device joined");
+                    Some(AdapterEvent::DeviceJoined {
+                        ieee: Some(ieee),
+                        nwk,
+                    })
                 }
             }
-            ezsp::Callback::Messaging(Messaging::IncomingMessage(m))
-                if m.aps_frame().profile_id() == 0x0000 =>
-            {
-                // Profile 0 is ZDO, not ZCL. Handing a ZDO frame to a ZCL
-                // decoder produces confident nonsense, so the split happens
-                // here where the profile is still visible.
-                let aps = m.aps_frame();
-                Some(AdapterEvent::Zdo {
-                    cluster: rszigbee_spec::zdo::ZdoClusterId(aps.cluster_id()),
-                    nwk: Nwk::new(m.sender()),
-                    payload: m.message().to_vec(),
-                })
-            }
-            ezsp::Callback::Messaging(Messaging::IncomingMessage(m)) => {
-                let aps = m.aps_frame();
-                Some(AdapterEvent::Zcl(ZclRx {
-                    // EZSP reports the short address; the IEEE is the runtime's
-                    // to resolve, and inventing one here would be a guess.
-                    ieee: None,
-                    nwk: Nwk::new(m.sender()),
-                    endpoint: EndpointId(aps.source_endpoint()),
-                    destination_endpoint: EndpointId(aps.destination_endpoint()),
-                    cluster: ClusterId(aps.cluster_id()),
-                    group: None,
-                    was_broadcast: false,
-                    link_quality: Some(m.last_hop_lqi()),
-                    frame: m.message().to_vec(),
-                }))
-            }
+            Callback::IncomingMessage {
+                aps_frame,
+                sender,
+                payload,
+                last_hop_lqi,
+                ..
+            } if aps_frame.profile_id == ZDO_PROFILE => Some(AdapterEvent::Zdo {
+                cluster: rszigbee_spec::zdo::ZdoClusterId(aps_frame.cluster_id),
+                nwk: Nwk::new(sender.0),
+                payload: payload.clone(),
+            })
+            .inspect(|_| {
+                debug!(lqi = last_hop_lqi, "ZDO frame");
+            }),
+            Callback::IncomingMessage {
+                aps_frame,
+                sender,
+                payload,
+                last_hop_lqi,
+                ..
+            } => Some(AdapterEvent::Zcl(ZclRx {
+                // EZSP reports the short address; the IEEE is the runtime's to
+                // resolve, and inventing one here would be a guess.
+                ieee: None,
+                nwk: Nwk::new(sender.0),
+                endpoint: EndpointId(aps_frame.source_endpoint),
+                destination_endpoint: EndpointId(aps_frame.destination_endpoint),
+                cluster: ClusterId(aps_frame.cluster_id),
+                group: None,
+                was_broadcast: false,
+                link_quality: Some(*last_hop_lqi),
+                frame: payload.clone(),
+            })),
             other => {
                 // Everything else is logged rather than dropped silently: the
                 // set of callbacks that matter grows with each phase, and a
@@ -703,16 +740,15 @@ async fn pump_callbacks(
     warn!("EZSP callback channel closed");
 }
 
-/// Maps an EZSP error into the adapter's error type.
-fn map_ezsp(e: &ezsp::Error) -> AdapterError {
-    AdapterError::Transport(e.to_string())
-}
-
 /// Converts an EZSP EUI64 into an [`Ieee`].
 fn eui64_to_ieee(eui: Eui64) -> Ieee {
     // EUI64 renders big-endian in text but is little-endian on the wire; go via
-    // the byte array rather than the string form so no parsing is involved.
-    Ieee::from_be_bytes(eui.into_array())
+    // the bytes rather than the string form so no parsing is involved.
+    // `to_wire` is little-endian, which is the order the NCP uses. An IEEE
+    // address is written big-endian, so the bytes reverse.
+    let mut bytes = eui.to_wire();
+    bytes.reverse();
+    Ieee::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
@@ -723,8 +759,8 @@ mod tests {
     #[test]
     fn a_joined_coordinator_resumes() {
         for state in [
-            NetworkStatus::JoinedNetwork,
-            NetworkStatus::JoinedNetworkNoParent,
+            NetworkStatus::JOINED_NETWORK,
+            NetworkStatus::JOINED_NETWORK_NO_PARENT,
         ] {
             assert_eq!(
                 EmberAdapter::outcome_for(state, MismatchPolicy::Fail).unwrap(),
@@ -739,7 +775,7 @@ mod tests {
         // The most destructive thing this crate can do. Forming a network on a
         // coordinator that has none orphans every device the user owns, so the
         // default must be to stop and explain.
-        let e = EmberAdapter::outcome_for(NetworkStatus::NoNetwork, MismatchPolicy::Fail)
+        let e = EmberAdapter::outcome_for(NetworkStatus::NO_NETWORK, MismatchPolicy::Fail)
             .expect_err("must refuse");
         assert!(matches!(e, AdapterError::NetworkMismatch(_)));
         assert!(
@@ -751,14 +787,14 @@ mod tests {
     #[test]
     fn forming_is_only_reachable_by_explicit_opt_in() {
         assert_eq!(
-            EmberAdapter::outcome_for(NetworkStatus::NoNetwork, MismatchPolicy::Form).unwrap(),
+            EmberAdapter::outcome_for(NetworkStatus::NO_NETWORK, MismatchPolicy::Form).unwrap(),
             StartOutcome::Formed
         );
     }
 
     #[test]
     fn a_transient_network_state_is_refused_rather_than_raced() {
-        for state in [NetworkStatus::JoiningNetwork, NetworkStatus::LeavingNetwork] {
+        for state in [NetworkStatus::JOINING, NetworkStatus::LEAVING_NETWORK] {
             let e = EmberAdapter::outcome_for(state, MismatchPolicy::Form)
                 .expect_err("must refuse mid-transition");
             assert!(e.to_string().contains("transient"), "{state:?} -> {e}");
@@ -777,14 +813,14 @@ mod tests {
             vec![0x01, 0x07, 0x01],
         );
         let aps = EmberAdapter::aps_frame_for(&req, 0);
-        assert_eq!(aps.group_id(), 0x1234, "the group must reach the APS frame");
+        assert_eq!(aps.group_id, 0x1234, "the group must reach the APS frame");
 
         // And no retry. A multicast is never acknowledged -- there is no single
         // recipient to acknowledge it -- so asking makes every send wait out a
         // timeout and then report a delivery failure that did not happen.
-        let opts = u16::from(aps.options());
+        let opts = aps.options.0;
         assert_eq!(
-            opts & u16::from(ApsOptions::RETRY),
+            opts & ApsOptions::RETRY.0,
             0,
             "APS retry on a multicast waits for an ack that cannot come"
         );
@@ -799,18 +835,18 @@ mod tests {
             vec![0x01, 0x07, 0x01],
         );
         let aps = EmberAdapter::aps_frame_for(&req, 0);
-        let opts = u16::from(aps.options());
+        let opts = aps.options.0;
         assert_eq!(
-            opts & u16::from(ApsOptions::RETRY),
+            opts & ApsOptions::RETRY.0,
             0,
             "a broadcast is not acknowledged"
         );
         assert_eq!(
-            opts & u16::from(ApsOptions::ENABLE_ROUTE_DISCOVERY),
+            opts & ApsOptions::ENABLE_ROUTE_DISCOVERY.0,
             0,
             "a broadcast has no route to discover"
         );
-        assert_eq!(aps.group_id(), 0, "a broadcast is not a group");
+        assert_eq!(aps.group_id, 0, "a broadcast is not a group");
     }
 
     #[test]
@@ -826,16 +862,16 @@ mod tests {
             vec![0x01, 0x07, 0x01],
         );
         let aps = EmberAdapter::aps_frame_for(&req, 0);
-        let opts = u16::from(aps.options());
-        assert_ne!(opts & u16::from(ApsOptions::RETRY), 0, "RETRY must be set");
+        let opts = aps.options.0;
+        assert_ne!(opts & ApsOptions::RETRY.0, 0, "RETRY must be set");
         assert_ne!(
-            opts & u16::from(ApsOptions::ENABLE_ROUTE_DISCOVERY),
+            opts & ApsOptions::ENABLE_ROUTE_DISCOVERY.0,
             0,
             "route discovery must be set"
         );
-        assert_eq!(aps.cluster_id(), 0x0006);
-        assert_eq!(aps.profile_id(), 0x0104);
-        assert_eq!(aps.destination_endpoint(), 1);
+        assert_eq!(aps.cluster_id, 0x0006);
+        assert_eq!(aps.profile_id, 0x0104);
+        assert_eq!(aps.destination_endpoint, 1);
     }
 
     #[test]
@@ -851,11 +887,8 @@ mod tests {
         )
         .with_options(TxOptions::probe(Duration::from_secs(2)));
         let aps = EmberAdapter::aps_frame_for(&req, 0);
-        assert_eq!(
-            u16::from(aps.options()) & u16::from(ApsOptions::ENABLE_ROUTE_DISCOVERY),
-            0
-        );
-        assert_ne!(u16::from(aps.options()) & u16::from(ApsOptions::RETRY), 0);
+        assert_eq!(aps.options.0 & ApsOptions::ENABLE_ROUTE_DISCOVERY.0, 0);
+        assert_ne!(aps.options.0 & ApsOptions::RETRY.0, 0);
     }
 
     #[test]

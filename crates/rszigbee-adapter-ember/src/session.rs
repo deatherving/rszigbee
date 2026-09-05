@@ -1,4 +1,4 @@
-//! Bringing an EZSP session up: port, `ASHv2`, version negotiation.
+//! Bringing an EZSP session up: port, ASH, version negotiation.
 //!
 //! Kept separate from the adapter because a failed negotiation cannot be
 //! retried on the same transport — ASH session state does not survive it — so
@@ -7,47 +7,29 @@
 
 use std::time::Duration;
 
-use ezsp::{Client, Connection};
+use rsezsp::Ncp;
+use rsezsp::transport::serial::{SerialSettings as RsSerialSettings, SerialTransport};
 use rszigbee_adapter::AdapterError;
-use tokio_serial::{FlowControl, SerialPortBuilderExt, SerialStream};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
+use crate::connection::Connection;
 use crate::fingerprint::SerialSettings;
-
-/// Channel depth for the ASH payload channel and the EZSP actor channels.
-///
-/// Bounded: an unbounded channel converts a slow consumer into unbounded memory
-/// growth, which is the failure mode to avoid rather than the one to hide.
-const CHANNEL_SIZE: usize = 64;
-
-/// How long to wait for the NCP to answer the `version` command.
-const NEGOTIATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long to allow the blocking `open(2)` before giving up on it.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// EZSP protocol versions to try, newest first.
-///
-/// 13 covers current `EmberZNet` 7.x, 8 covers older 6.x. Walking the list means
-/// a user with older firmware does not have to know to configure it.
-pub const VERSIONS: &[u8] = &[13, 12, 9, 8];
+/// How long to allow the reset handshake and version negotiation.
+const NEGOTIATE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A live EZSP session.
+#[derive(Debug)]
 pub struct Session {
     /// The negotiated protocol version.
     pub version: u8,
     /// The cloneable command interface.
     pub connection: Connection,
     /// Asynchronous callbacks from the NCP.
-    pub callbacks: tokio::sync::mpsc::Receiver<ezsp::Callback>,
-}
-
-impl std::fmt::Debug for Session {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session")
-            .field("version", &self.version)
-            .finish_non_exhaustive()
-    }
+    pub callbacks: tokio::sync::mpsc::Receiver<rsezsp::ezsp::callback::Callback>,
 }
 
 /// Opens the serial port, with a deadline.
@@ -58,18 +40,17 @@ impl std::fmt::Debug for Session {
 /// five-second timeout configured. The open therefore runs on a blocking thread
 /// with its own deadline; if it expires the thread is abandoned rather than
 /// leaked into the request path.
-async fn open_port(path: &str, settings: SerialSettings) -> Result<SerialStream, AdapterError> {
+async fn open_port(path: &str, settings: SerialSettings) -> Result<SerialTransport, AdapterError> {
     let owned = path.to_owned();
     let handle = tokio::task::spawn_blocking(move || {
-        tokio_serial::new(&owned, settings.baud)
-            .flow_control(if settings.rtscts {
-                FlowControl::Hardware
-            } else {
-                FlowControl::None
-            })
-            .timeout(Duration::from_millis(500))
-            .open_native_async()
-            .map_err(|e| e.to_string())
+        SerialTransport::open(
+            &owned,
+            RsSerialSettings {
+                baud: settings.baud,
+                rtscts: settings.rtscts,
+            },
+        )
+        .map_err(|e| e.to_string())
     });
 
     match tokio::time::timeout(OPEN_TIMEOUT, handle).await {
@@ -84,138 +65,86 @@ async fn open_port(path: &str, settings: SerialSettings) -> Result<SerialStream,
     }
 }
 
-/// Opens the port and negotiates one specific EZSP version.
-async fn negotiate(
-    path: &str,
-    settings: SerialSettings,
-    want: u8,
-) -> Result<Session, AdapterError> {
-    let port = open_port(path, settings).await?;
-    let (reader, writer) = tokio::io::split(port);
-
-    // ashv2 owns the reset handshake, byte stuffing, CRC, ACK/NAK and
-    // retransmission. Dropping the handle closes the outbound queue, which
-    // terminates the transmitter and then the receiver, so a failed attempt
-    // does not leak tasks.
-    let (payload_tx, payload_rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
-    let (ash_handle, ash_futures) = ashv2::start(reader, writer, payload_tx);
-    tokio::spawn(ash_futures.transmitter);
-    tokio::spawn(ash_futures.receiver);
-
-    let ezsp_rx = ashv2::ezsp::Receiver::new(payload_rx);
-    let (client, ezsp_futures) = Client::run(ash_handle, ezsp_rx, CHANNEL_SIZE);
-    tokio::spawn(ezsp_futures.transmitter);
-    tokio::spawn(ezsp_futures.receiver);
-
-    let version = std::num::NonZero::new(want)
-        .ok_or_else(|| AdapterError::Transport("EZSP version must be non-zero".into()))?;
-
-    match tokio::time::timeout(NEGOTIATE_TIMEOUT, client.connect(version)).await {
-        Ok(Ok((connection, callbacks))) => Ok(Session {
-            version: want,
-            connection,
-            callbacks,
-        }),
-        Ok(Err(e)) => Err(AdapterError::IncompatibleFirmware(format!(
-            "NCP rejected EZSP version {want}: {e}"
-        ))),
-        Err(_) => Err(AdapterError::Timeout(NEGOTIATE_TIMEOUT)),
-    }
-}
-
-/// Opens the port and negotiates, trying `candidates` in order.
+/// Opens the port and brings an EZSP session up.
 ///
-/// Each attempt rebuilds the whole stack from a fresh port, because ASH session
-/// state does not survive a failed negotiation and retrying on the same
-/// transport would probe a desynchronised link.
-pub async fn connect(
-    path: &str,
-    settings: SerialSettings,
-    candidates: &[u8],
-) -> Result<Session, AdapterError> {
-    let mut last = None;
+/// # Version negotiation is not a search
+///
+/// This used to try a list of versions newest-first, rebuilding the whole stack
+/// on each failure. That was working around a transport that treated the
+/// version as something the host chose. It is not: the host offers a version
+/// and the NCP answers with the one it runs, and `rsezsp` completes that
+/// exchange itself — including the second round trip that a differing version
+/// requires. One attempt is enough, and a failure now means something is
+/// actually wrong rather than "try an older number".
+///
+/// # Errors
+///
+/// [`AdapterError::Transport`] if the port cannot be opened or the NCP does not
+/// answer, and [`AdapterError::IncompatibleFirmware`] if it negotiates a
+/// version this build does not know the wire format for.
+pub async fn connect(path: &str, settings: SerialSettings) -> Result<Session, AdapterError> {
+    let transport = open_port(path, settings).await?;
+    debug!(path, "port open, negotiating EZSP");
 
-    for want in candidates.iter().copied() {
-        debug!(version = want, path, "negotiating EZSP");
-        match negotiate(path, settings, want).await {
-            Ok(session) => {
-                info!(version = want, path, "EZSP session established");
-                return Ok(session);
-            }
-            Err(e) => {
-                // A transport failure is fatal and has nothing to do with the
-                // version, so stop rather than repeating it once per candidate.
-                if matches!(e, AdapterError::Transport(_)) {
-                    return Err(e);
+    let ncp = match tokio::time::timeout(NEGOTIATE_TIMEOUT, Ncp::connect(transport)).await {
+        Ok(Ok(ncp)) => ncp,
+        Ok(Err(e)) => {
+            return Err(match e {
+                rsezsp::ezsp::EzspError::UnsupportedVersion { negotiated } => {
+                    AdapterError::IncompatibleFirmware(format!(
+                        "the NCP speaks EZSP {negotiated}, which this build does not support"
+                    ))
                 }
-                warn!(version = want, error = %e, "EZSP version not accepted");
-                last = Some(e);
-            }
+                other => AdapterError::Transport(format!("EZSP negotiation failed: {other}")),
+            });
         }
-    }
+        Err(_) => return Err(AdapterError::Timeout(NEGOTIATE_TIMEOUT)),
+    };
 
-    Err(last.unwrap_or_else(|| {
-        AdapterError::IncompatibleFirmware("no EZSP versions were attempted".into())
-    }))
+    let version = ncp.version().raw();
+    let stack_version = ncp.stack_version();
+    let (connection, callbacks) = Connection::spawn(ncp);
+
+    info!(
+        version,
+        stack_version = format_args!("{stack_version:#06x}"),
+        path,
+        "EZSP session established"
+    );
+
+    Ok(Session {
+        version,
+        connection,
+        callbacks,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_version_list_is_newest_first_and_plausible() {
-        // Order matters: negotiating an old version against new firmware
-        // succeeds but loses commands, so the newest must be tried first.
-        assert_eq!(VERSIONS.first(), Some(&13));
-        let mut sorted = VERSIONS.to_vec();
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
-        assert_eq!(VERSIONS, sorted.as_slice(), "candidates must be descending");
-        assert!(VERSIONS.iter().all(|v| *v >= 4 && *v <= 20));
-    }
-
     #[tokio::test]
     async fn a_nonexistent_port_fails_fast_as_a_transport_error() {
-        // Must be Transport, not IncompatibleFirmware: `connect` uses that
-        // distinction to stop instead of retrying every version against a path
-        // that will never open.
-        let e = connect(
-            "/dev/definitely-not-a-real-port",
-            SerialSettings::FALLBACK,
-            VERSIONS,
-        )
-        .await
-        .expect_err("must fail");
+        // Must be Transport rather than IncompatibleFirmware: they mean
+        // different things to a caller deciding whether to try another device.
+        let e = connect("/dev/definitely-not-a-real-port", SerialSettings::FALLBACK)
+            .await
+            .expect_err("must fail");
         assert!(matches!(e, AdapterError::Transport(_)), "got {e:?}");
         assert!(e.to_string().contains("definitely-not-a-real-port"));
     }
 
     #[tokio::test]
-    async fn a_transport_failure_is_not_retried_per_version() {
-        // Regression guard: the first version of this logic printed the same
-        // "cannot open" error four times.
+    async fn a_missing_port_gives_up_immediately_rather_than_waiting_out_a_timeout() {
+        // A path that cannot open fails in `open(2)`, not by exhausting the
+        // negotiation deadline. The old version of this code retried once per
+        // candidate version and printed the same error four times.
         let start = std::time::Instant::now();
-        let _ = connect(
-            "/dev/definitely-not-a-real-port",
-            SerialSettings::FALLBACK,
-            VERSIONS,
-        )
-        .await;
+        let _ = connect("/dev/definitely-not-a-real-port", SerialSettings::FALLBACK).await;
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "should have given up immediately, took {:?}",
             start.elapsed()
-        );
-    }
-
-    #[tokio::test]
-    async fn an_empty_candidate_list_is_an_error_not_a_hang() {
-        let e = connect("/dev/null", SerialSettings::FALLBACK, &[])
-            .await
-            .expect_err("must fail");
-        assert!(
-            matches!(e, AdapterError::IncompatibleFirmware(_)),
-            "got {e:?}"
         );
     }
 }

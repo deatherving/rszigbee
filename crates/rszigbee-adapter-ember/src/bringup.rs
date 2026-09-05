@@ -25,10 +25,16 @@
 //! A coordinator with no application endpoint has nowhere to deliver ZCL
 //! traffic to, and `Active_EP_rsp` comes back empty. Observed exactly that.
 
-use ezsp::ember::Eui64;
-use ezsp::ezsp::network::InitBitmask;
-use ezsp::{Configuration, Networking, Security};
+use rsezsp::Eui64;
+use rsezsp::ezsp::command::{
+    AddEndpoint, ClearTransientLinkKeys, GetConfigurationValue, ImportTransientKey, NetworkInit,
+    SetConfigurationValue, SetManufacturerCode, SetPolicy,
+};
+use rsezsp::types::network::{ConfigId, Decision, NetworkInitBitmask, PolicyId};
+use rsezsp::types::security::{SecurityKey, SecurityManFlags};
 use rszigbee_adapter::AdapterError;
+
+use crate::connection::{Connection, check, context};
 use rszigbee_spec::ids::{ClusterId, EndpointId, ManufacturerCode, ProfileId};
 use tracing::{debug, info, warn};
 
@@ -97,26 +103,30 @@ pub enum StoredNetwork {
 /// Must run before the network comes up: EZSP rejects `addEndpoint` once the
 /// stack is running.
 pub async fn configure_endpoints(
-    connection: &mut ezsp::Connection,
+    connection: &Connection,
     manufacturer: ManufacturerCode,
 ) -> Result<(), AdapterError> {
-    connection
-        .add_endpoint(
-            PRIMARY_ENDPOINT.0,
-            ProfileId::HA.0,
-            COORDINATOR_DEVICE_ID,
-            0,
-            IN_CLUSTERS.iter().copied().collect(),
-            OUT_CLUSTERS.iter().copied().collect(),
-        )
+    let response = connection
+        .command(AddEndpoint {
+            endpoint: PRIMARY_ENDPOINT.0,
+            profile_id: ProfileId::HA.0,
+            device_id: COORDINATOR_DEVICE_ID,
+            app_flags: 0,
+            input_clusters: IN_CLUSTERS.to_vec(),
+            output_clusters: OUT_CLUSTERS.to_vec(),
+        })
         .await
         .map_err(|e| {
-            AdapterError::Transport(format!(
-                "cannot register coordinator endpoint {}: {e}. Without an \
-                 endpoint the coordinator has nowhere to receive ZCL traffic.",
-                PRIMARY_ENDPOINT.0
-            ))
+            context(
+                &format!(
+                    "cannot register coordinator endpoint {}. Without an \
+                     endpoint the coordinator has nowhere to receive ZCL traffic",
+                    PRIMARY_ENDPOINT.0
+                ),
+                &e,
+            )
         })?;
+    check("registering the coordinator endpoint", response.status)?;
 
     debug!(
         endpoint = PRIMARY_ENDPOINT.0,
@@ -130,9 +140,11 @@ pub async fn configure_endpoints(
     // device, so an unset coordinator misidentifies itself. Observed on real
     // hardware before this call was added.
     connection
-        .set_manufacturer_code(manufacturer.0)
+        .command(SetManufacturerCode {
+            code: manufacturer.0,
+        })
         .await
-        .map_err(|e| AdapterError::Transport(format!("cannot set the manufacturer code: {e}")))?;
+        .map_err(|e| context("cannot set the manufacturer code", &e))?;
 
     Ok(())
 }
@@ -165,12 +177,10 @@ const ALLOW_UNSECURED_REJOIN_BIT: u8 = 0x02;
 /// vary by firmware build, and without the old value a failure here cannot be
 /// told apart from a default that was already correct.
 ///
-/// [`StackProfile`]: ezsp::ezsp::config::Id::StackProfile
-/// [`SecurityLevel`]: ezsp::ezsp::config::Id::SecurityLevel
-/// [`MaxEndDeviceChildren`]: ezsp::ezsp::config::Id::MaxEndDeviceChildren
-pub async fn configure_stack(connection: &mut ezsp::Connection) -> Result<(), AdapterError> {
-    use ezsp::ezsp::config;
-
+/// [`StackProfile`]: rsezsp::types::network::ConfigId::STACK_PROFILE
+/// [`SecurityLevel`]: rsezsp::types::network::ConfigId::SECURITY_LEVEL
+/// [`MaxEndDeviceChildren`]: rsezsp::types::network::ConfigId::MAX_END_DEVICE_CHILDREN
+pub async fn configure_stack(connection: &Connection) -> Result<(), AdapterError> {
     /// `(id, value, required, what it affects)`.
     ///
     /// `required` marks the three a device reads out of a beacon: getting one
@@ -178,58 +188,78 @@ pub async fn configure_stack(connection: &mut ezsp::Connection) -> Result<(), Ad
     /// failing to set it is worth refusing to start over. The rest are
     /// timeouts and table sizes where a firmware default that differs is a
     /// difference in behaviour, not a broken network.
-    const SETTINGS: &[(config::Id, u16, bool, &str)] = &[
+    const SETTINGS: &[(ConfigId, u16, bool, &str)] = &[
         (
-            config::Id::StackProfile,
+            ConfigId::STACK_PROFILE,
             2,
             true,
             "ZigBee Pro; advertised in every beacon",
         ),
         (
-            config::Id::SecurityLevel,
+            ConfigId::SECURITY_LEVEL,
             5,
             true,
             "standard security; advertised in every beacon",
         ),
         (
-            config::Id::MaxEndDeviceChildren,
+            ConfigId::MAX_END_DEVICE_CHILDREN,
             32,
             true,
             "beacon end-device capacity; sleepy devices join as children",
         ),
         (
-            config::Id::EndDevicePollTimeout,
+            ConfigId::END_DEVICE_POLL_TIMEOUT,
             8,
             false,
             "how long a sleepy child may stay silent before it is dropped",
         ),
         (
-            config::Id::IndirectTransmissionTimeout,
+            ConfigId::INDIRECT_TRANSMISSION_TIMEOUT,
             7680,
             false,
             "how long a message for a sleepy child is held for its next poll",
         ),
         (
-            config::Id::TrustCenterAddressCacheSize,
+            ConfigId::TRUST_CENTER_ADDRESS_CACHE_SIZE,
             2,
             false,
             "trust-centre address cache",
         ),
     ];
 
-    for &(id, value, required, affects) in SETTINGS {
-        let before = connection.get_configuration_value(id).await.ok();
-        match connection.set_configuration_value(id, value).await {
-            Ok(()) => debug!(?id, value, ?before, affects, "stack configuration set"),
+    for &(config_id, value, required, affects) in SETTINGS {
+        let before = connection
+            .command(GetConfigurationValue { config_id })
+            .await
+            .ok()
+            .filter(|r| r.status.is_ok())
+            .map(|r| r.value);
+
+        let outcome = match connection
+            .command(SetConfigurationValue { config_id, value })
+            .await
+        {
+            Ok(response) => check("setting a configuration value", response.status),
+            Err(e) => Err(context("setting a configuration value", &e)),
+        };
+
+        match outcome {
+            Ok(()) => debug!(
+                ?config_id,
+                value,
+                ?before,
+                affects,
+                "stack configuration set"
+            ),
             Err(e) if !required => {
                 warn!(
-                    ?id,
+                    ?config_id,
                     value, affects, "optional stack configuration refused: {e}"
                 );
             }
             Err(e) => {
                 return Err(AdapterError::Transport(format!(
-                    "cannot set {id:?} to {value} ({affects}): {e}. A device \
+                    "cannot set {config_id:?} to {value} ({affects}): {e}. A device \
                      scanning for a network reads this out of the coordinator's \
                      beacon, and will not attempt to join at all if it is wrong."
                 )));
@@ -266,46 +296,32 @@ const WELL_KNOWN_TC_LINK_KEY: [u8; 16] = *b"ZigBeeAlliance09";
 /// The key is *transient* deliberately. A joining device is trusted with it
 /// only inside the window an operator opened; it is not left in the key table
 /// afterwards, which is what [`clear_commissioning_key`] is for.
-pub async fn install_commissioning_key(
-    connection: &mut ezsp::Connection,
-) -> Result<(), AdapterError> {
-    use silizium::zigbee::security::man::{Context, DerivedKeyType, Flags, KeyType};
-
+pub async fn install_commissioning_key(connection: &Connection) -> Result<(), AdapterError> {
     /// Applies to whichever device joins, since which one that will be is not
     /// known until it does. A specific EUI64 here would only admit a device
     /// whose address was known in advance, which is the install-code flow.
-    const ANY_DEVICE: [u8; 8] = [0xff; 8];
+    const ANY_DEVICE: Eui64 = Eui64::WILDCARD;
 
-    let context = Context::new(
-        // A trust-centre link key with a timeout: the NCP ages it out on its
-        // own, so a window that is never explicitly closed does not leave the
-        // key accepted indefinitely.
-        KeyType::TcLinkWithTimeout,
-        0,
-        DerivedKeyType::None,
-        Eui64::from(ANY_DEVICE),
-        0,
-        Flags::NONE,
-        0,
-    );
-
-    connection
-        .import_transient_key(
-            context,
-            Eui64::from(ANY_DEVICE),
-            WELL_KNOWN_TC_LINK_KEY,
-            Flags::NONE,
-        )
+    let response = connection
+        .command(ImportTransientKey {
+            eui64: ANY_DEVICE,
+            key: SecurityKey::new(WELL_KNOWN_TC_LINK_KEY),
+            // Below EZSP 14 this field is present and means "no qualifiers on
+            // the key". At 14 and above it is not sent at all, which rsezsp
+            // handles from the negotiated version.
+            flags: SecurityManFlags::NONE,
+        })
         .await
         .map_err(|e| {
-            AdapterError::Transport(format!(
-                "cannot install the commissioning key: {e}. Without it a Zigbee \
-                 3.0 device can join but cannot finish commissioning, and will \
-                 rejoin indefinitely."
-            ))
+            context(
+                "cannot install the commissioning key. Without it a Zigbee 3.0 \
+                 device joins at the MAC layer and can never finish commissioning",
+                &e,
+            )
         })?;
+    check("installing the commissioning key", response.status)?;
 
-    debug!("commissioning key installed for this join window");
+    debug!("commissioning key installed for the join window");
     Ok(())
 }
 
@@ -314,13 +330,11 @@ pub async fn install_commissioning_key(
 /// The counterpart to [`install_commissioning_key`]. Leaving the well-known key
 /// installed would let a device commission against a key everyone knows at any
 /// later moment, rather than only inside a window an operator opened.
-pub async fn clear_commissioning_key(
-    connection: &mut ezsp::Connection,
-) -> Result<(), AdapterError> {
+pub async fn clear_commissioning_key(connection: &Connection) -> Result<(), AdapterError> {
     connection
-        .clear_transient_link_keys()
+        .command(ClearTransientLinkKeys)
         .await
-        .map_err(|e| AdapterError::Transport(format!("cannot clear the commissioning key: {e}")))?;
+        .map_err(|e| context("cannot clear the commissioning key", &e))?;
     debug!("commissioning key cleared");
     Ok(())
 }
@@ -348,11 +362,7 @@ pub async fn clear_commissioning_key(
 /// Application key requests stay denied. That is key material for
 /// device-to-device encryption, nothing here needs it, and granting it widens
 /// what a joined device can ask for on the basis that it happened to ask.
-pub async fn configure_join_policies(
-    connection: &mut ezsp::Connection,
-) -> Result<(), AdapterError> {
-    use ezsp::ezsp::{decision, policy};
-
+pub async fn configure_join_policies(connection: &Connection) -> Result<(), AdapterError> {
     /// `ALLOW_JOINS | ALLOW_UNSECURED_REJOINS`, as a bitmask.
     ///
     /// Deliberately a literal rather than `decision::Id::AllowJoins`, which is
@@ -369,33 +379,42 @@ pub async fn configure_join_policies(
     /// about thirty seconds with this field set to 3.
     const ALLOW_JOINS: u8 = ALLOW_JOIN_BIT | ALLOW_UNSECURED_REJOIN_BIT;
     /// Answer a joining device's key request with the current link key.
-    const SEND_CURRENT_KEY: u8 = decision::Id::AllowTcKeyRequestsAndSendCurrentKey as u8;
+    const SEND_CURRENT_KEY: u8 = Decision::ALLOW_TC_KEY_REQUEST_SAME_KEY.0;
     /// Refuse application link key requests.
-    const DENY_APP_KEYS: u8 = decision::Id::DenyAppKeyRequests as u8;
+    const DENY_APP_KEYS: u8 = Decision::DENY_APP_KEY_REQUESTS.0;
 
-    for (id, decision, what) in [
+    for (policy_id, decision, what) in [
+        (PolicyId::TRUST_CENTER, ALLOW_JOINS, "admit joining devices"),
         (
-            policy::Id::TrustCenter,
-            ALLOW_JOINS,
-            "admit joining devices",
-        ),
-        (
-            policy::Id::TcKeyRequest,
+            PolicyId::TC_KEY_REQUEST,
             SEND_CURRENT_KEY,
             "answer link key requests",
         ),
         (
-            policy::Id::AppKeyRequest,
+            PolicyId::APP_KEY_REQUEST,
             DENY_APP_KEYS,
             "refuse application key requests",
         ),
     ] {
-        connection.set_policy(id, decision).await.map_err(|e| {
-            AdapterError::Transport(format!(
-                "cannot set the {id:?} policy to {what}: {e}. Without it a \
-                     device cannot join even while joining is open."
-            ))
-        })?;
+        let response = connection
+            .command(SetPolicy {
+                policy_id,
+                decision: Decision(decision),
+            })
+            .await
+            .map_err(|e| {
+                context(
+                    &format!(
+                        "cannot set the {policy_id:?} policy to {what}. Without it a \
+                         device cannot join even while joining is open"
+                    ),
+                    &e,
+                )
+            })?;
+        check(
+            &format!("setting the {policy_id:?} policy"),
+            response.status,
+        )?;
     }
 
     debug!("trust-centre policies set: joins allowed, link keys answered");
@@ -403,33 +422,38 @@ pub async fn configure_join_policies(
 }
 
 /// Resumes a stored network, if there is one.
-pub async fn resume_stored_network(
-    connection: &mut ezsp::Connection,
-) -> Result<StoredNetwork, AdapterError> {
+pub async fn resume_stored_network(connection: &Connection) -> Result<StoredNetwork, AdapterError> {
+    /// `EMBER_NOT_JOINED`, the documented answer for "nothing stored".
+    ///
+    /// Matched on the value rather than on the text of an error message. The
+    /// previous implementation searched the formatted error for `NotJoined`,
+    /// which silently depends on an upstream `Display` impl -- a rename there
+    /// would turn "no network yet" into a hard failure, or worse, turn a real
+    /// failure into "no network" and form a network over a working one.
+    const NOT_JOINED: u32 = 0x93;
+
     // PARENT_INFO_IN_TOKEN preserves an end device's parent across a reboot.
     // Harmless for a coordinator and correct if this adapter is ever used for
     // a non-coordinator role.
-    match connection
-        .network_init(InitBitmask::PARENT_INFO_IN_TOKEN)
+    let response = connection
+        .command(NetworkInit {
+            bitmask: NetworkInitBitmask::PARENT_INFO_IN_TOKEN,
+        })
         .await
-    {
-        Ok(()) => {
-            info!("resumed the stored network");
-            Ok(StoredNetwork::Resumed)
-        }
-        Err(e) => {
-            // `NotJoined` is the documented answer for "nothing stored". It is a
-            // state, not a failure, and conflating the two is what makes a stack
-            // form a network over a working one.
-            let text = e.to_string();
-            if text.contains("NotJoined") || text.contains("NOT_JOINED") {
-                debug!("no stored network on this coordinator");
-                Ok(StoredNetwork::None)
-            } else {
-                Err(AdapterError::Transport(format!("network_init failed: {e}")))
-            }
-        }
+        .map_err(|e| context("network_init failed", &e))?;
+
+    if response.status.is_ok() {
+        info!("resumed the stored network");
+        return Ok(StoredNetwork::Resumed);
     }
+    if response.status.0 == NOT_JOINED {
+        debug!("no stored network on this coordinator");
+        return Ok(StoredNetwork::None);
+    }
+    Err(AdapterError::Transport(format!(
+        "network_init failed: {}",
+        response.status
+    )))
 }
 
 /// The clusters the coordinator advertises, for diagnostics.

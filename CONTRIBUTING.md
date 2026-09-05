@@ -48,7 +48,7 @@ upstream file. Do not copy or translate code from a GPL-3.0 project — see
 
 `scripts/check-boundaries.sh` enforces three rules mechanically:
 
-1. `rszigbee-core` does not depend on `ezsp`, `ashv2` or a serial port.
+1. `rszigbee-core` does not depend on `rsezsp` or a serial port.
 2. `rszigbee-core` has no MQTT, and no JSON in its default features.
 3. `rszigbee-spec` has no tokio, no serial and no I/O.
 
@@ -73,8 +73,6 @@ cargo run -p rszigbee --example ember_selftest -- /dev/ttyUSB0
 
 Paste the output in the pull request. `--form` writes a new network key to the
 dongle and orphans anything joined to it, so only use it on a blank one.
-
-`spikes/ezsp-probe` is read-only and safe against a live network.
 
 ## Licence of contributions
 

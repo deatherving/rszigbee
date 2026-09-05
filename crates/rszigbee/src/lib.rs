@@ -17,7 +17,7 @@
 //! |---|---|---|
 //! | [`spec`] | nothing but codecs | tokio, serial, I/O of any kind |
 //! | [`adapter`] | `spec` | a concrete coordinator protocol |
-//! | `rszigbee-adapter-ember` | `ezsp`, `ashv2`, `tokio-serial` | — |
+//! | `rszigbee-adapter-ember` | `rsezsp` | — |
 //! | [`devices`] | `spec` | `rszigbee-core`, so definitions stay data |
 //! | [`core`] | `adapter`, `spec`, `devices` | MQTT, JSON, Home Assistant, **EZSP** |
 //!
